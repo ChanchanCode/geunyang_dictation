@@ -10,7 +10,7 @@ V="$1"; NOTES="${2:-새 버전}"
 echo "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "버전은 1.2.3 형식."; exit 1; }
 
 sed -i '' "s/^VERSION = \".*\"/VERSION = \"$V\"/" engine.py
-grep -q "^VERSION = \"$V\"$" engine.py || { echo "engine.py VERSION 치환 실패"; exit 1; }
+grep -q "^VERSION = \"$V\"" engine.py || { echo "engine.py VERSION 치환 실패"; exit 1; }
 
 T=$(mktemp -d)
 tar czf "$T/payload.tgz" app.py engine.py viewer.html requirements.txt make_app.sh README.md assets
@@ -22,8 +22,10 @@ git tag -f "v$V" >/dev/null
 git push -q origin main
 git push -qf origin "v$V"
 
+# 릴리스 자산은 ASCII 이름으로 — GitHub 이 한글 파일명을 점으로 치환한다
+cp "dist/그냥받아쓰기-설치.command" "$T/geunyang-dictation-install.command"
 gh release delete "v$V" -y >/dev/null 2>&1 || true
-gh release create "v$V" "$T/payload.tgz" "dist/그냥받아쓰기-설치.command" \
+gh release create "v$V" "$T/payload.tgz" "$T/geunyang-dictation-install.command" \
   --title "v$V" --notes "$NOTES"
 rm -rf "$T"
 echo "완료: v$V — 친구 앱의 설정(⚙)에 업데이트 버튼이 뜬다."
