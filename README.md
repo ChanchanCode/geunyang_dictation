@@ -30,9 +30,16 @@ git clone <repo-url> && cd geunyang_dictation && ./install.sh
 설치 후 Spotlight(⌘Space)에서 **그냥 받아쓰기** 실행 → 뷰어가 브라우저에 열린다.
 
 ## 업데이트
-새 버전이 나오면 뷰어 설정(⚙) 톱니에 주황 점이 뜬다. 설정을 열고 맨 아래 **업데이트**를 누르면
-앱이 알아서 받아 적용하고 다시 시작한다. 터미널도, 다운로드 차단 창도 다시 볼 일이 없다.
-녹취(`transcripts/`)와 설정은 그대로 남는다. 녹음 중에는 업데이트가 잠긴다.
+새 버전이 있으면 앱을 열 때 **"새로운 업데이트가 있습니다"** 창이 뜬다. `업데이트`를 누르면
+받아서 적용하고 앱을 다시 띄운 뒤 화면까지 알아서 새로고침한다. 사용자가 칠 명령은 없다.
+`닫기`를 누르면 그 버전은 다시 묻지 않고, 톱니의 주황 점과 설정 맨 아래 버튼으로 언제든 할 수 있다.
+녹취(`transcripts/`)와 설정은 그대로 남고, 녹음 중에는 잠긴다.
+
+업데이트 기능이 없던 옛 설치본(2026-09-04 이전 배포분)은 한 번만 아래를 터미널에 붙여넣으면 된다.
+그 뒤부터는 앱이 알아서 한다.
+```
+cd ~/Downloads && curl -fsSLO https://github.com/ChanchanCode/geunyang_dictation/releases/latest/download/geunyang-dictation-install.command && zsh geunyang-dictation-install.command
+```
 
 배포하는 쪽은 `./release.sh 1.1.0 "바뀐 점"` 한 줄이면 된다 — 버전을 올리고 페이로드·설치기를
 구워 GitHub Release 로 올린다. 앱은 릴리스 자산 `payload.tgz` 를 그 이름으로 찾으니 바꾸지 말 것.

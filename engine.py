@@ -20,7 +20,7 @@ for _n in ("whisperlivekit",):
 ROOT = pathlib.Path(__file__).resolve().parent
 TR = ROOT / "transcripts"
 CONFIG = ROOT / "config.json"
-VERSION = "1.0.0"          # release.sh 가 여기를 올린다
+VERSION = "1.1.0"          # release.sh 가 여기를 올린다
 UPDATE_REPO = "ChanchanCode/geunyang_dictation"
 MODEL = "mlx-community/whisper-large-v3-turbo"
 SR = 16000
