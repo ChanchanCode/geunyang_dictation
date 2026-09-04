@@ -1,0 +1,4 @@
+mlx-whisper
+parakeet-mlx
+rumps
+numpy

@@ -1,0 +1,12 @@
+# 사용자 데이터 — 절대 올리지 않는다
+transcripts/
+config.json
+.app.log
+.agywork/
+
+# 로컬 산출물
+.venv/
+__pycache__/
+dist/
+*.pyc
+.DS_Store
