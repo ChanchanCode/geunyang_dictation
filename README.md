@@ -38,8 +38,9 @@ git clone <repo-url> && cd geunyang_dictation && ./install.sh
 업데이트 기능이 없던 옛 설치본(2026-09-04 이전 배포분)은 한 번만 아래를 터미널에 붙여넣으면 된다.
 그 뒤부터는 앱이 알아서 한다.
 ```
-cd ~/Downloads && curl -fsSLO https://github.com/ChanchanCode/geunyang_dictation/releases/latest/download/geunyang-dictation-install.command && zsh geunyang-dictation-install.command
+cd ~/Downloads && curl -fsSL -o gy-install.command "$(curl -fsSL https://api.github.com/repos/ChanchanCode/geunyang_dictation/releases/latest | python3 -c 'import json,sys;print(next(a["browser_download_url"] for a in json.load(sys.stdin)["assets"] if a["name"].endswith(".command")))')" && zsh gy-install.command
 ```
+(`releases/latest/download/...` 짧은 경로는 CDN 캐시 때문에 한동안 옛 파일을 주므로 쓰지 않는다.)
 
 배포하는 쪽은 `./release.sh 1.1.0 "바뀐 점"` 한 줄이면 된다 — 버전을 올리고 페이로드·설치기를
 구워 GitHub Release 로 올린다. 앱은 릴리스 자산 `payload.tgz` 를 그 이름으로 찾으니 바꾸지 말 것.
