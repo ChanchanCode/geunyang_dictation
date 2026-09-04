@@ -17,8 +17,10 @@ Apple Silicon Mac(인텔 불가) · macOS 14+ · 램 16GB 권장(8GB는 라이�
 ## 설치
 
 **방법 1 — 설치파일 하나 (권장, 친구용)**
-`./build_installer.sh`로 만든 `dist/그냥받아쓰기-설치.command`를 전달받아 더블클릭.
-(다운로드 파일이라 처음엔 우클릭 → 열기 필요할 수 있음. Homebrew가 없으면 자동 설치하며 맥 암호를 한 번 묻는다.)
+[Releases](https://github.com/ChanchanCode/geunyang_dictation/releases/latest)에서
+`geunyang-dictation-install.command`를 받는다. 다운로드한 스크립트는 macOS가 막으므로
+**더블클릭 대신 터미널로 실행**한다 — 터미널(⌘Space → `터미널`)에 `zsh ` 를 치고 한 칸 띄운 뒤
+받은 파일을 창에 드래그해 놓고 Enter. (Homebrew가 없으면 자동 설치하며 맥 암호를 한 번 묻는다.)
 
 **방법 2 — 저장소에서**
 ```
@@ -26,6 +28,14 @@ git clone <repo-url> && cd geunyang_dictation && ./install.sh
 ```
 
 설치 후 Spotlight(⌘Space)에서 **그냥 받아쓰기** 실행 → 뷰어가 브라우저에 열린다.
+
+## 업데이트
+새 버전이 나오면 뷰어 설정(⚙) 톱니에 주황 점이 뜬다. 설정을 열고 맨 아래 **업데이트**를 누르면
+앱이 알아서 받아 적용하고 다시 시작한다. 터미널도, 다운로드 차단 창도 다시 볼 일이 없다.
+녹취(`transcripts/`)와 설정은 그대로 남는다. 녹음 중에는 업데이트가 잠긴다.
+
+배포하는 쪽은 `./release.sh 1.1.0 "바뀐 점"` 한 줄이면 된다 — 버전을 올리고 페이로드·설치기를
+구워 GitHub Release 로 올린다. 앱은 릴리스 자산 `payload.tgz` 를 그 이름으로 찾으니 바꾸지 말 것.
 
 ## 사용
 | 동작 | 방법 |
