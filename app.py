@@ -22,6 +22,17 @@ def ctx_files(sid):
         if cd.is_dir() else []
 
 
+def ctx_info(sid):
+    """자료 목록 + 크기 + 텍스트 변환 여부 (자료 패널용)."""
+    cd, td = eng.TR / sid / "ctx", eng.TR / sid / eng.CTX_TEXT_DIR
+    out = []
+    for n in ctx_files(sid):
+        t = td / (n + ".md")
+        out.append({"name": n, "size": (cd / n).stat().st_size, "converted": t.exists(),
+                    "chars": t.stat().st_size if t.exists() else 0})
+    return out
+
+
 def read_meta(sid):
     try:
         return json.loads((eng.TR / sid / "meta.json").read_text())
@@ -87,6 +98,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(json.dumps({
                 "lines": lines, "context": meta.get("context", ""),
                 "polished": bool(meta.get("polished")), "ctx_files": ctx_files(sid),
+                "ctx_info": ctx_info(sid),
                 "ctx_text": eng.ctx_text_files(eng.TR / sid), "conv": eng.conv_status(sid),
                 "subject": eng.subject_of(meta), "title": meta.get("title", ""),
                 "title_auto": bool(meta.get("title_auto")),
@@ -233,12 +245,26 @@ class Handler(BaseHTTPRequestHandler):
                     meta, copied = set_subject(sid, guess)
             elif saved:
                 copied = eng.file_materials(d, meta, saved)
-            if saved:   # 텍스트 변환은 오래 걸리니 백그라운드 — 다듬기·요약이 기다렸다 쓴다
+            conv = eng.conv_status(sid)
+            if saved:   # 상세 텍스트 변환은 오래 걸리니 백그라운드(빠른 맥락 정리와 병렬) — 다듬기·요약이 기다렸다 쓴다
                 threading.Thread(target=eng.convert_ctx, args=(d,), daemon=True).start()
+                if not conv.get("busy"):
+                    conv = {"busy": True, "note": "강의자료 변환 준비 중…", "error": ""}
             self._send(json.dumps({"ok": True, "saved": saved, "skipped": skipped,
-                                   "files": ctx_files(sid), "guess": guess,
+                                   "files": ctx_files(sid), "info": ctx_info(sid), "conv": conv,
+                                   "guess": guess,
                                    "subject": eng.subject_of(meta), "title": meta.get("title", ""),
                                    "copied": copied}, ensure_ascii=False).encode())
+        elif self.path == "/api/session/ctx_remove":
+            # 자료 하나 빼기: ctx/<name> 과 변환본. 자료 폴더에 복사한 파일은 그대로 둔다
+            sid = pathlib.Path(str(body.get("id", ""))).name
+            name = pathlib.Path(str(body.get("name", ""))).name
+            d = eng.TR / sid
+            if sid and name and (d / "ctx" / name).is_file():
+                (d / "ctx" / name).unlink()
+                (d / eng.CTX_TEXT_DIR / (name + ".md")).unlink(missing_ok=True)
+            self._send(json.dumps({"ok": True, "files": ctx_files(sid), "info": ctx_info(sid)},
+                                  ensure_ascii=False).encode())
         elif self.path == "/api/session/ctx_clear":
             import shutil
             sid = pathlib.Path(str(body.get("id", ""))).name
@@ -366,7 +392,7 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=_restart, daemon=True).start()
         elif self.path == "/api/config":
             for k in ("translate", "theme", "layout", "ko_width", "ko_font", "line_h",
-                      "agy_account", "live", "langs", "mat_dir"):
+                      "agy_account", "live", "langs", "mat_dir", "toc_w"):
                 if k in body:
                     ENGINE.set_cfg(k, body[k])
             self._send(b'{"ok":true}')

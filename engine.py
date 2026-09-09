@@ -795,7 +795,7 @@ def live_cut(text, last_line, lo=0):
 # ---------- 설정 ----------
 
 DEFAULT_CFG = {"translate": "live", "theme": "auto", "layout": "inline",
-               "ko_width": 360, "ko_font": 14, "line_h": 1.65,
+               "ko_width": 360, "ko_font": 14, "line_h": 1.65, "toc_w": 200,
                "agy_account": "main", "port": 8765, "live": "on",
                "langs": list(DEFAULT_LANGS)}
 ACCT_STORE = pathlib.Path.home() / ".claude/.state/gemini-accounts"
@@ -803,7 +803,7 @@ CFG_ALLOWED = {"translate": ("live", "after", "off"),
                "theme": ("auto", "light", "dark", "term", "term-light"),
                "layout": ("inline", "side"),
                "live": ("on", "off")}   # live=off: parakeet 미로드 (RAM ~2.3GB 절약)
-CFG_NUM = {"ko_width": (200, 600), "ko_font": (11, 20), "line_h": (1.2, 2.4)}
+CFG_NUM = {"ko_width": (200, 600), "ko_font": (11, 20), "line_h": (1.2, 2.4), "toc_w": (140, 420)}
 
 def load_cfg():
     try:

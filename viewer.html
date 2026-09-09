@@ -216,17 +216,44 @@ select{-webkit-appearance:none;appearance:none;padding:0 24px 0 10px;
 /* 탭 · 목차 · 요약 */
 #tabs[hidden]{display:none}
 #tabs{margin-right:6px}
-#sessView.hasToc{display:grid;grid-template-columns:172px minmax(0,1fr);column-gap:22px;align-items:start}
-#toc[hidden]{display:none}
-#toc{position:sticky;top:62px;max-height:calc(100vh - 84px);overflow-y:auto;padding:14px 0 10px;
-  font-size:12px;line-height:1.35}
+#sessView.hasToc{display:grid;grid-template-columns:minmax(0,1fr) var(--tocw,200px);column-gap:18px;align-items:start}
+#tocWrap[hidden]{display:none}
+#tocWrap{position:sticky;top:62px;max-height:calc(100vh - 84px);display:flex;min-width:0}
+#tocHandle{flex:none;width:9px;cursor:col-resize;position:relative;margin-right:2px}
+#tocHandle::after{content:"";position:absolute;left:3px;top:14px;bottom:10px;width:2px;border-radius:2px;background:transparent}
+#tocHandle:hover::after,#tocHandle.drag::after{background:var(--accent)}
+#toc{flex:1;min-width:0;overflow-y:auto;padding:14px 0 10px;font-size:12px;line-height:1.35}
 #toc .tt{font-size:10.5px;letter-spacing:.04em;color:var(--ink-soft);margin:0 0 7px 10px;text-transform:uppercase}
 #toc a{display:block;padding:4px 9px 4px 10px;border-left:2px solid var(--line);color:var(--ink-soft);
   cursor:pointer;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #toc a:hover{color:var(--ink)}
 #toc a.on{border-left-color:var(--accent);color:var(--ink);font-weight:500}
 #toc a.sub{font-size:11.5px;opacity:.8}
-@media(max-width:1060px){#sessView.hasToc{display:block}#toc{display:none}}
+@media(max-width:900px){#sessView.hasToc{display:block}#tocWrap{display:none}}
+#btnToc[hidden],#btnFiles[hidden]{display:none}
+#btnToc,#btnFiles{width:28px;padding:0;display:flex;align-items:center;justify-content:center;position:relative}
+#btnToc.on{color:var(--accent);border-color:var(--accent)}
+#btnFiles .cnt{position:absolute;top:-5px;right:-5px;min-width:15px;height:15px;line-height:15px;padding:0 4px;
+  border-radius:8px;background:var(--accent);color:#fff;font-size:9.5px;font-weight:600;text-align:center}
+#filesWrap{position:relative}
+#filesPop[hidden]{display:none}
+#filesPop{position:absolute;right:0;top:34px;z-index:20;width:320px;background:var(--paper);
+  border:1px solid var(--line-strong);border-radius:10px;padding:10px 12px;box-shadow:0 8px 24px rgba(0,0,0,.14)}
+#filesPop.drag{border-color:var(--accent);background:var(--accent-soft)}
+#filesPop .fh{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink);margin-bottom:6px}
+#filesPop .fh span{color:var(--ink-soft);margin-right:auto}
+#filesPop .fh button{height:24px;line-height:22px;font-size:12px;padding:0 10px}
+#fList{max-height:40vh;overflow-y:auto;margin:0 -4px}
+.fi{display:flex;align-items:center;gap:8px;padding:5px 4px;border-radius:6px;font-size:12px}
+.fi:hover{background:var(--accent-soft)}
+.fi .fn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.fi .fs{flex:none;color:var(--ink-soft);font-size:11px;white-space:nowrap}
+.fi .fx{flex:none;width:20px;height:20px;line-height:18px;padding:0;border:0;background:transparent;color:var(--ink-soft);border-radius:4px;font-size:12px;visibility:hidden}
+.fi:hover .fx{visibility:visible}
+.fi .fx:hover{color:#c14b3d;background:var(--line)}
+.fi.none{color:var(--ink-soft);justify-content:center}
+#fSt{font-size:11.5px;color:var(--accent);min-height:15px;margin-top:4px}
+#filesPop .fnote{font-size:11px;color:var(--ink-soft);line-height:1.45;margin-top:6px;padding-top:6px;border-top:1px solid var(--line)}
 .sec{display:flex;align-items:center;gap:8px;margin:28px 0 4px;font-size:12px;color:var(--ink-soft);
   scroll-margin-top:70px}
 .sec b{font-weight:600;color:var(--ink);white-space:nowrap}
@@ -395,6 +422,15 @@ main.side #koHandle{display:block;position:absolute;top:0;bottom:0;
   <header>
     <div class="seg" id="tabs" data-g="tab" hidden><button data-v="trans">번역</button><button data-v="sum">요약</button></div>
     <span id="st"></span>
+    <div id="filesWrap"><button id="btnFiles" title="강의자료" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.05 12.25 20.2a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.48-8.48"/></svg><span class="cnt" hidden></span></button>
+      <div id="filesPop" hidden>
+        <div class="fh">강의자료 <span id="fCnt"></span><button id="fAdd">＋ 추가</button><input type="file" id="fFile" multiple accept=".pdf,image/*,.txt,.md" hidden></div>
+        <div id="fList"></div>
+        <div id="fSt"></div>
+        <div class="fnote">올리면 바로 텍스트로 바꿔 두고 다듬기·요약이 참고해요. 여기에 끌어다 놓아도 돼요. 과목이 정해져 있고 자료 폴더를 켰으면 그 폴더에도 복사해요.</div>
+      </div>
+    </div>
+    <button id="btnToc" title="목차 열기/닫기" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/></svg></button>
     <button id="btnCopy" title="전문 복사" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
     <button id="btnDl" title="transcript.md 다운로드" hidden><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>
     <div id="gearWrap">
@@ -437,7 +473,6 @@ main.side #koHandle{display:block;position:absolute;top:0;bottom:0;
     <button class="rec" id="btnNewHome">＋ 새로 녹음</button>
   </div>
   <div id="sessView" hidden>
-    <nav id="toc" hidden></nav>
     <div id="sbody">
       <div id="note"></div>
       <div id="logWrap"><div id="log"></div><div id="koHandle"></div></div>
@@ -445,6 +480,7 @@ main.side #koHandle{display:block;position:absolute;top:0;bottom:0;
       <div id="sumView" hidden></div>
       <div id="selBar" hidden><span id="selN"></span><button id="selEdit">수정</button><button id="selCopy">복사</button><button id="selDel" class="del">삭제</button><button id="selNone">해제</button></div>
     </div>
+    <div id="tocWrap" hidden><div id="tocHandle" title="끌어서 폭 조절"></div><nav id="toc"></nav></div>
   </div>
 </main>
 </div>
@@ -507,10 +543,11 @@ function post(action,extra){return api("/api/control",{method:"POST",
   headers:{"Content-Type":"application/json"},body:JSON.stringify({action,...extra})})}
 function saveCfg(obj){return api("/api/config",{method:"POST",
   headers:{"Content-Type":"application/json"},body:JSON.stringify(obj)})}
-const CFGV={ko_width:360,ko_font:14,line_h:1.65};
+const CFGV={ko_width:360,ko_font:14,line_h:1.65,toc_w:200};
 function applyTypo(){
   const r=document.documentElement.style;
   r.setProperty("--kow",CFGV.ko_width+"px");
+  r.setProperty("--tocw",CFGV.toc_w+"px");
   r.setProperty("--kofs",CFGV.ko_font+"px");
   r.setProperty("--lh",CFGV.line_h);
   $("vKofs").textContent=CFGV.ko_font;
@@ -544,6 +581,16 @@ $("koHandle").onmousedown=e=>{
     $("koHandle").classList.remove("drag");saveCfg({ko_width:CFGV.ko_width});};
   document.addEventListener("mousemove",move);document.addEventListener("mouseup",up);
 };
+$("tocHandle").onmousedown=e=>{   // 목차 폭 — 번역 패널과 같은 방식
+  e.preventDefault();$("tocHandle").classList.add("drag");
+  const move=ev=>{const r=$("tocWrap").getBoundingClientRect();
+    CFGV.toc_w=Math.max(140,Math.min(420,Math.round(r.right-ev.clientX)));applyTypo();};
+  const up=()=>{document.removeEventListener("mousemove",move);document.removeEventListener("mouseup",up);
+    $("tocHandle").classList.remove("drag");saveCfg({toc_w:CFGV.toc_w});};
+  document.addEventListener("mousemove",move);document.addEventListener("mouseup",up);
+};
+function tocOpen(){return localStorage.getItem("tocOpen")!=="0"}
+$("btnToc").onclick=()=>{localStorage.setItem("tocOpen",tocOpen()?"0":"1");tocSig="";renderToc();};
 let ACCTS=[];
 async function fetchAccts(){
   try{
@@ -737,7 +784,7 @@ $("btnQuit").onclick=async()=>{await post("quit");
   $("st").textContent="엔진 종료됨 — 앱 아이콘을 다시 실행하면 켜진다";};
 $("btnGear").onclick=e=>{e.stopPropagation();
   const opening=$("pop").hidden;
-  $("pop").hidden=!opening?true:false;
+  $("pop").hidden=!opening?true:false;$("filesPop").hidden=true;
   if(opening){
     $("langChips").hidden=true; $("langHead").classList.remove("open");
     $("langCaret").textContent="▸";
@@ -800,9 +847,12 @@ let tocSig="";
 function renderToc(){
   const ol=outline();
   const items=ol.map((sec,k)=>({k,sec})).filter(x=>tab==="sum"||(x.sec.start!==null&&x.sec.start!==undefined));
-  const show=items.length>0&&!isLive();
+  const has=items.length>0&&!isLive();
+  $("btnToc").hidden=!has;
+  $("btnToc").classList.toggle("on",has&&tocOpen());
+  const show=has&&tocOpen();
   $("sessView").classList.toggle("hasToc",show);
-  $("toc").hidden=!show;
+  $("tocWrap").hidden=!show;
   if(!show){tocSig="";return}
   const sig=tab+"|"+items.map(x=>x.k+":"+x.sec.title).join("|");
   if(sig===tocSig)return;
@@ -834,7 +884,7 @@ function gotoLine(i){   /* 요약의 '원문 보기' → 번역 탭의 그 라�
 }
 let spyRaf=0;
 function spy(){
-  if($("toc").hidden)return;
+  if($("tocWrap").hidden)return;
   const as=[...$("toc").querySelectorAll("a")];
   let cur=null;
   for(const a of as){const el=secTarget(+a.dataset.k);
@@ -901,9 +951,9 @@ function renderSummary(){
     if($("sumRedo"))$("sumRedo").onclick=startSummary;
     v.querySelectorAll(".smeta a[data-l]").forEach(a=>a.onclick=()=>gotoLine(+a.dataset.l));
   }else if(busy){
-    v.innerHTML='<div class="sumEmpty"><p>✦ '+esc(sm.note||"요약 중…")+'</p><p style="font-size:12.5px">강의자료 변환 → 다듬기 → 요약 순으로 진행해요. 이 화면을 떠나도 계속 돼요.</p></div>';
+    v.innerHTML='<div class="sumEmpty"><p>✦ '+esc(sm.note||"요약 중…")+'</p><p style="font-size:12.5px">자료는 올릴 때 미리 텍스트로 바꿔 둬요(안 된 게 있으면 먼저 바꾸고) → 다듬기 → 요약. 이 화면을 떠나도 계속 돼요.</p></div>';
   }else{
-    v.innerHTML='<div class="sumEmpty"><p>강의 요약·정리본을 만들어요. 아직 다듬지 않았으면 먼저 다듬고, 강의자료(PDF)가 있으면 오늘 어느 페이지를 다뤘는지도 붙여요. 목차가 생기면 번역 탭에서도 바로 이동할 수 있어요.</p><button id="sumGo" class="rec">✦ 요약 만들기</button></div>';
+    v.innerHTML='<div class="sumEmpty"><p>강의 요약·정리본을 만들어요. 아직 다듬지 않았으면 먼저 다듬고, 강의자료(PDF)가 있으면 오늘 어느 페이지를 다뤘는지도 붙여요. 자료를 더 넣으려면 위의 📎 버튼. 목차가 생기면 번역 탭에서도 바로 이동할 수 있어요.</p><button id="sumGo" class="rec">✦ 요약 만들기</button></div>';
     $("sumGo").onclick=startSummary;
   }
 }
@@ -1129,10 +1179,64 @@ function subjFlash(msg){
   note.dataset.hold="1";note.textContent=msg;
   setTimeout(()=>{if($("subjNote")){delete $("subjNote").dataset.hold;renderSubjChips();}},4000);
 }
+/* ── 강의자료 패널 (헤더 📎) — 녹음 뒤에도 추가·확인·빼기 ── */
+function fmtSize(b){return b>=1048576?(b/1048576).toFixed(1)+"MB":b>=1024?Math.round(b/1024)+"KB":b+"B"}
+function convLabel(f){
+  const conv=(sessCache&&sessCache.conv)||{};
+  return f.converted?"변환됨":(conv.busy?"변환 중…":(conv.error?"변환 실패":"미변환"));
+}
+function renderFilesBadge(){
+  const n=((sessCache&&sessCache.ctx_info)||[]).length, b=$("btnFiles").querySelector(".cnt");
+  b.hidden=!n; b.textContent=n;
+}
+function renderFiles(){
+  const info=(sessCache&&sessCache.ctx_info)||[], conv=(sessCache&&sessCache.conv)||{};
+  renderFilesBadge();
+  $("fCnt").textContent=info.length?info.length+"개":"";
+  $("fList").innerHTML=info.length?info.map(f=>'<div class="fi"><span class="fn" title="'+escA(f.name)+'">'+esc(f.name)+
+    '</span><span class="fs">'+fmtSize(f.size)+' · '+convLabel(f)+'</span><button class="fx" data-n="'+escA(f.name)+'" title="세션에서 빼기">✕</button></div>').join('')
+    :'<div class="fi none">올린 자료가 없어요</div>';
+  $("fList").querySelectorAll(".fx").forEach(b=>b.onclick=async e=>{
+    e.stopPropagation();const n=b.dataset.n;
+    if(!confirm("'"+n+"'을 이 세션에서 뺄까요? (자료 폴더에 복사한 파일은 그대로 둬요)"))return;
+    const r=await apiPost("/api/session/ctx_remove",{id:view,name:n});
+    if(!r.ok){alert(r.error||"빼지 못했어요");return}
+    if(sessCache){sessCache.ctx_files=r.files;sessCache.ctx_info=r.info;}
+    renderFiles();renderCtxFiles();
+  });
+  if(!ctxBusy)$("fSt").textContent=conv.busy?conv.note:(conv.error||"");
+}
+$("btnFiles").onclick=async e=>{
+  e.stopPropagation();
+  const opening=$("filesPop").hidden;
+  $("filesPop").hidden=!opening; $("pop").hidden=true;
+  if(opening){renderFiles();
+    if(!isLive()){try{const c=await api("/api/session/"+view);   // 변환 상태만 최신으로
+      if(sessCache){sessCache.ctx_info=c.ctx_info;sessCache.conv=c.conv;sessCache.ctx_text=c.ctx_text;}renderFiles();}catch(e){}}
+  }
+};
+$("fAdd").onclick=e=>{e.stopPropagation();$("fFile").click()};
+$("fFile").onchange=e=>{ctxAddFiles(e.target.files,false);e.target.value=""};
+$("filesPop").onclick=e=>e.stopPropagation();
+$("filesPop").ondragover=e=>{e.preventDefault();$("filesPop").classList.add("drag")};
+$("filesPop").ondragleave=()=>$("filesPop").classList.remove("drag");
+$("filesPop").ondrop=e=>{e.preventDefault();$("filesPop").classList.remove("drag");ctxAddFiles(e.dataTransfer.files,false)};
+document.addEventListener("click",e=>{if(!e.target.closest("#filesWrap"))$("filesPop").hidden=true});
+/* 맥락 박스의 자료 줄 — 이름 + 변환 표시(✓ 됨 · … 진행 중) */
+function renderCtxFiles(){
+  const row=$("ctxFilesRow"); if(!row)return;
+  const info=(sessCache&&sessCache.ctx_info)||[], conv=(sessCache&&sessCache.conv)||{};
+  if(!info.length){row.innerHTML="";return}
+  row.innerHTML='<span class="files" title="'+escA(info.map(f=>f.name+" — "+convLabel(f)).join("\n"))+'">자료 '+info.length+'개: '+
+    info.map(f=>esc(f.name)+(f.converted?" ✓":(conv.busy?" …":""))).join(", ")+'</span>'+
+    '<span class="x" id="ctxClear" title="자료 전부 지우기">✕</span>';
+  $("ctxClear").onclick=ctxClearFiles;
+}
 /* ── 맥락 자료 → Gemini 영어 정리 ── */
 let ctxBusy=false, ctxSt="", ctxLastSrc=null;
 function ctxShowStatus(){
   const el=$("ctxSt"), box=$("ctxBox");
+  if($("fSt"))$("fSt").textContent=ctxSt;
   if(!el)return;
   el.textContent=ctxSt; el.classList.toggle("busy",ctxBusy);
   if(box)box.classList.toggle("busy",ctxBusy);
@@ -1149,7 +1253,7 @@ async function ctxBlur(){
 }
 function readB64(f){return new Promise((ok,no)=>{const r=new FileReader();
   r.onload=()=>ok(String(r.result).split(",")[1]||"");r.onerror=no;r.readAsDataURL(f)})}
-async function ctxAddFiles(list){
+async function ctxAddFiles(list,digest=true){   // digest=false: 녹음 뒤 자료 패널에서 — 맥락 노트는 안 건드린다
   if(view==="home"||ctxBusy||!list||!list.length)return;
   const files=[...list].filter(f=>/\.(pdf|png|jpe?g|webp|gif|heic|txt|md)$/i.test(f.name));
   if(!files.length){ctxSt="PDF·이미지·텍스트 파일만 넣을 수 있어요";ctxShowStatus();return}
@@ -1159,13 +1263,14 @@ async function ctxAddFiles(list){
     for(const f of files)payload.push({name:f.name,b64:await readB64(f)});
     const r=await apiPost("/api/session/ctx_files",{id:view,files:payload});
     if(!r.ok)throw new Error(r.error||"업로드 실패");
-    if(sessCache){sessCache.ctx_files=r.files;
+    if(sessCache){sessCache.ctx_files=r.files;sessCache.ctx_info=r.info;sessCache.conv=r.conv;
       if(r.subject){sessCache.subject=r.subject;sessCache.title=r.title;sessCache.title_auto=!!r.guess||sessCache.title_auto;}}
     if(r.guess){if(SUBJ&&!SUBJ.subjects.some(s=>s.name===r.guess))SUBJ.subjects.unshift({name:r.guess,count:0});
       subjFlash("자료 이름으로 과목을 '"+r.guess+"'로 봤어요 — 제목 "+r.title+(r.copied&&r.copied.length?" · 자료 폴더에 복사":""));loadSessions();}
     else if(r.copied&&r.copied.length)subjFlash("자료 "+r.copied.length+"개를 자료 폴더에 복사했어요");
-    renderSubjChips();
+    renderSubjChips();renderFiles();renderCtxFiles();
     ctxBusy=false;
+    if(!digest){ctxSt="올렸어요 — 텍스트로 바꾸는 중. 다듬기·요약은 변환이 끝나길 기다렸다 써요";ctxShowStatus();return}
     const ta=$("ctxTa"); const note=ta?ta.value.trim():"";
     await ctxDigest(hangulHeavy(note)||!(sessCache&&sessCache.context)?note:"");
   }catch(e){ctxBusy=false;ctxSt="⚠ "+(e.message||e);ctxShowStatus();}
@@ -1190,7 +1295,7 @@ async function ctxDigest(text){
 async function ctxClearFiles(){
   if(view==="home"||ctxBusy)return;
   await apiPost("/api/session/ctx_clear",{id:view});
-  if(sessCache)sessCache.ctx_files=[];
+  if(sessCache){sessCache.ctx_files=[];sessCache.ctx_info=[];}
   ctxSt="자료를 지웠어요";render();
 }
 function stLabel(s){return {idle:"대기",starting:"준비 중",recording:"녹음 중",
@@ -1202,7 +1307,9 @@ function render(){
   $("btnDl").hidden=view==="home";
   $("btnCopy").hidden=view==="home";
   renderDock();
-  if(view==="home"){SEL.clear();$("selBar").hidden=true;closeLineMenu();$("tabs").hidden=true;return}
+  $("btnFiles").hidden=view==="home";
+  if(view==="home"){SEL.clear();$("selBar").hidden=true;closeLineMenu();$("tabs").hidden=true;$("btnToc").hidden=true;$("filesPop").hidden=true;return}
+  renderFilesBadge();
   const live=isLive();
   const lines=live?ST.lines:(sessCache?sessCache.lines:[]);
   const hasSum=!!(sessCache&&sessCache.summary);
@@ -1220,7 +1327,6 @@ function render(){
   renderToc();
   const atBottom=innerHeight+scrollY>=document.body.scrollHeight-160;
   if(lines.length===0&&!live){
-    const cf=(sessCache&&sessCache.ctx_files)||[];
     $("log").innerHTML='<div class="ctxBox" id="ctxBox">'+
       '<div class="subjRow"><span class="cl">과목</span><div id="subjChips"></div></div><div id="subjNote"></div>'+
       '<div class="cl">맥락 (선택) — 과목·주제·자주 나올 용어를 적어두면 받아쓰기와 번역이 더 정확해져요. '+
@@ -1229,7 +1335,7 @@ function render(){
       '<div class="ctxRow"><button id="ctxPick">📎 PDF·이미지 넣기</button>'+
       '<button id="ctxGo" title="메모와 자료를 Gemini로 다시 정리">✦ 영어로 정리</button>'+
       '<input type="file" id="ctxFile" multiple accept=".pdf,image/*,.txt,.md" hidden>'+
-      (cf.length?'<span class="files" title="'+escA(cf.join(", "))+'">자료 '+cf.length+'개: '+esc(cf.join(", "))+'</span><span class="x" id="ctxClear" title="자료 지우기">✕</span>':'')+
+      '<span id="ctxFilesRow" style="display:contents"></span>'+
       '</div><div id="ctxSt"></div></div>'+
       '<div class="empty">아래 녹음 시작을 누르면 여기에 받아써요.</div>';
     const ta=$("ctxTa");
@@ -1238,7 +1344,7 @@ function render(){
     $("ctxPick").onclick=()=>$("ctxFile").click();
     $("ctxFile").onchange=e=>{ctxAddFiles(e.target.files);e.target.value=""};
     $("ctxGo").onclick=()=>ctxDigest(ta.value);
-    if($("ctxClear"))$("ctxClear").onclick=ctxClearFiles;
+    renderCtxFiles();
     const box=$("ctxBox");
     box.ondragover=e=>{e.preventDefault();box.classList.add("drag")};
     box.ondragleave=()=>box.classList.remove("drag");
@@ -1328,10 +1434,11 @@ async function tick(){
         if(wasBusy&&mine(sm)&&!sm.busy&&!sm.error&&sessCache.summary){tab="sum";}  // 요약 완료 → 바로 보여준다
       }
     }
-    if(convTick++%5===0&&view!=="home"&&!isLive()&&sessCache&&sessCache.conv&&sessCache.conv.busy&&$("ctxSt")){
+    if(convTick++%5===0&&view!=="home"&&!isLive()&&sessCache&&sessCache.conv&&sessCache.conv.busy){
       try{const c=await api("/api/session/"+view);   // 자료 변환 진행만 갱신 (입력 중인 메모는 건드리지 않는다)
-        sessCache.conv=c.conv;sessCache.ctx_text=c.ctx_text;
-        if(!ctxBusy&&!ctxSt.startsWith("⚠")){ctxSt=c.conv.busy?c.conv.note:(c.conv.error||"자료 변환 완료");ctxShowStatus();}
+        sessCache.conv=c.conv;sessCache.ctx_text=c.ctx_text;sessCache.ctx_info=c.ctx_info;
+        if($("ctxSt")&&!ctxBusy&&!ctxSt.startsWith("⚠")){ctxSt=c.conv.busy?c.conv.note:(c.conv.error||"자료 변환 완료");ctxShowStatus();}
+        renderCtxFiles();if(!$("filesPop").hidden)renderFiles();
       }catch(e){}
     }
     setSeg("tr",s.translate_mode);
@@ -1532,6 +1639,7 @@ applyLayout();applyTypo();render();tick();loadSessions();setInterval(loadSession
   if(c.ko_width)CFGV.ko_width=c.ko_width;
   if(c.ko_font)CFGV.ko_font=c.ko_font;
   if(c.line_h)CFGV.line_h=c.line_h;
+  if(c.toc_w)CFGV.toc_w=c.toc_w;
   showMat(c.mat_dir||"");
   applyTheme();applyLayout();applyTypo();rev=-1;
   const s=await api("/api/state");  // 녹음 중이면 그 세션으로 바로
