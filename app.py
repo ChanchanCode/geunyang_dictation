@@ -61,11 +61,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
-    def _send(self, body, ct="application/json; charset=utf-8", code=200, dl=None):
+    def _send(self, body, ct="application/json; charset=utf-8", code=200, dl=None, dl_ascii=None):
         self.send_response(code)
         self.send_header("Content-Type", ct)
-        if dl:
-            self.send_header("Content-Disposition", f'attachment; filename="{dl}"')
+        if dl:   # 한글 제목 파일명은 filename* 로, ASCII 대체 이름도 같이
+            import urllib.parse
+            asc = dl_ascii or dl.encode("ascii", "ignore").decode().strip() or "download.md"
+            self.send_header("Content-Disposition",
+                             f"attachment; filename=\"{asc}\"; filename*=UTF-8''{urllib.parse.quote(dl)}")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -123,11 +126,16 @@ class Handler(BaseHTTPRequestHandler):
         elif p == "/api/agy_accounts":
             self._send(json.dumps(eng.agy_accounts(), ensure_ascii=False).encode())
         elif p.startswith("/download/"):
+            # /download/<sid>            → transcript.md (원문+번역)
+            # /download/<sid>?what=summary → summary.md (요약본)
             sid = pathlib.Path(p.rsplit("/", 1)[1]).name
-            f = eng.TR / sid / "transcript.md"
+            summary = "what=summary" in self.path
+            f = eng.TR / sid / ("summary.md" if summary else "transcript.md")
             if f.exists():
+                title = (read_meta(sid).get("title") or sid).replace("/", "-")
                 self._send(f.read_bytes(), "text/markdown; charset=utf-8",
-                           dl=f"{sid}.md")
+                           dl=f"{title}{' 요약' if summary else ''}.md",
+                           dl_ascii=f"{sid}{'-summary' if summary else ''}.md")
             else:
                 self._send(b"not found", "text/plain", 404)
         else:

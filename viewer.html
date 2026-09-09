@@ -146,6 +146,9 @@ select{-webkit-appearance:none;appearance:none;padding:0 24px 0 10px;
 /* 설정 팝오버 */
 #btnDl[hidden],#btnCopy[hidden]{display:none}
 #btnDl,#btnCopy{width:28px;padding:0;display:flex;align-items:center;justify-content:center}
+#dlWrap{position:relative}
+#dlMenu{top:34px;right:0;min-width:150px}
+#dlMenu button:disabled{opacity:.4}
 #gearWrap{position:relative}
 #btnGear{width:28px;padding:0;display:flex;align-items:center;justify-content:center;position:relative}
 #btnGear.upd::after{content:"";position:absolute;top:3px;right:3px;width:6px;height:6px;
@@ -255,15 +258,13 @@ select{-webkit-appearance:none;appearance:none;padding:0 24px 0 10px;
 #fSt{font-size:11.5px;color:var(--accent);min-height:15px;margin-top:4px}
 #filesPop .fnote{font-size:11px;color:var(--ink-soft);line-height:1.45;margin-top:6px;padding-top:6px;border-top:1px solid var(--line)}
 /* 전사 본문의 섹션 제목 — 요약 목차와 같은 구간. 큰 글자·강조색 번호·위아래 여백·구분선 */
-.sec{display:flex;align-items:baseline;gap:10px;margin:56px 0 18px;padding-bottom:9px;
-  border-bottom:1px solid var(--line-strong);font-size:16px;color:var(--ink-soft);scroll-margin-top:70px;
-  -webkit-user-select:none;user-select:none}   /* 드래그 복사에 딸려오지 않게 */
+.sec{display:block;margin:56px 0 18px;padding-bottom:9px;border-bottom:1px solid var(--line-strong);
+  font-size:16px;line-height:1.5;color:var(--ink-soft);scroll-margin-top:70px}   /* 선택·복사되면 "5. 제목 p.11" 한 줄 */
 .sec:first-child{margin-top:14px}
-.sec .no{flex:none;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px;font-weight:600;
-  color:var(--accent);background:var(--accent-soft);border-radius:6px;padding:1px 7px;align-self:center}
-.sec b{font-weight:700;color:var(--ink);line-height:1.35}
-.sec .pg{flex:none;margin-left:auto;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;
-  white-space:nowrap;align-self:center}
+.sec .no{display:inline-block;margin-right:4px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px;
+  font-weight:600;color:var(--accent);background:var(--accent-soft);border-radius:6px;padding:0 7px;vertical-align:2px}
+.sec b{font-weight:700;color:var(--ink)}
+.sec .pg{margin-left:8px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;white-space:nowrap}
 #sumView[hidden]{display:none}
 #sumView{max-width:720px;margin:0 auto;padding-top:6px}
 .sumBar{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ink-soft);margin:14px 0 4px}
@@ -296,8 +297,9 @@ select{-webkit-appearance:none;appearance:none;padding:0 24px 0 10px;
 .sum .spages{display:inline-block;font-size:12.5px;color:var(--ink);background:var(--accent-soft);
   border-left:3px solid var(--accent);padding:4px 10px;border-radius:0 8px 8px 0;margin:2px 0 8px}
 .sum .smeta{display:flex;gap:12px;align-items:center;font-size:11.5px;color:var(--ink-soft);
-  margin:-4px 0 8px;font-family:"IBM Plex Mono",ui-monospace,monospace;-webkit-user-select:none;user-select:none}
-.sumBar,.sumFoot,#toc{-webkit-user-select:none;user-select:none}
+  margin:-4px 0 8px;font-family:"IBM Plex Mono",ui-monospace,monospace}
+/* 복사해서 md 로 저장할 때 딸려오면 성가신 것들만 선택 제외 — 링크·버튼·패널. 본문·섹션 제목·페이지 표시는 선택된다 */
+.sum .smeta a,.sumBar,.sumFoot,#toc,#dock,#selBar,header,aside{-webkit-user-select:none;user-select:none}
 .sum .smeta a{color:var(--accent);cursor:pointer;text-decoration:none}
 .sum .smeta a:hover{text-decoration:underline}
 /* 과목 칩 (맥락 박스) */
@@ -441,7 +443,7 @@ main.side #koHandle{display:block;position:absolute;top:0;bottom:0;
     </div>
     <button id="btnToc" title="목차 열기/닫기" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/></svg></button>
     <button id="btnCopy" title="전문 복사" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
-    <button id="btnDl" title="transcript.md 다운로드" hidden><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>
+    <div id="dlWrap"><button id="btnDl" title="내려받기" hidden><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button></div>
     <div id="gearWrap">
       <button id="btnGear" title="설정" aria-label="설정"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.56 1.03z"/></svg></button>
       <div id="pop" hidden>
@@ -748,7 +750,18 @@ async function fetchAgy(){
     }
   }catch(e){$("agySt").textContent="확인 실패"}
 }
-$("btnDl").onclick=()=>{if(view!=="home")location.href="/download/"+view};
+$("btnDl").onclick=e=>{   // 번역본 / 요약본 고르기
+  e.stopPropagation();
+  if(view==="home")return;
+  const old=$("dlMenu"); if(old){old.remove();return}
+  const hasSum=!!(sessCache&&sessCache.summary);
+  const m=document.createElement("div"); m.className="smenu"; m.id="dlMenu";
+  m.innerHTML='<button data-w="transcript">번역본 (.md)</button><button data-w="summary"'+(hasSum?'':' disabled title="아직 요약이 없어요"')+'>요약본 (.md)</button>';
+  $("dlWrap").appendChild(m);
+  m.querySelectorAll("button").forEach(b=>b.onclick=ev=>{ev.stopPropagation();m.remove();
+    location.href="/download/"+view+(b.dataset.w==="summary"?"?what=summary":"")});
+};
+document.addEventListener("click",e=>{if(!e.target.closest("#dlWrap")){const m=$("dlMenu");if(m)m.remove()}});
 $("btnCopy").onclick=async()=>{
   if(view==="home")return;
   const lines=isLive()?ST.lines:(sessCache?sessCache.lines:[]);
@@ -835,8 +848,8 @@ function secAnchors(lines){
 }
 function secHtml(k){
   const sec=outline()[k], m=sec.title.match(/^(\d+)[.)]\s*(.+)$/);
-  return '<div class="sec" data-k="'+k+'">'+(m?'<span class="no">'+m[1]+'</span><b>'+esc(m[2])+'</b>':'<b>'+esc(sec.title)+'</b>')+
-    (sec.pages?'<span class="pg">'+esc(sec.pages)+'</span>':'')+'</div>';
+  return '<div class="sec" data-k="'+k+'">'+(m?'<span class="no">'+m[1]+'.</span> <b>'+esc(m[2])+'</b>':'<b>'+esc(sec.title)+'</b>')+
+    (sec.pages?' <span class="pg">'+esc(sec.pages)+'</span>':'')+'</div>';
 }
 function renderLines(lines){
   const at=secAnchors(lines), side=layoutMode()==="side";
