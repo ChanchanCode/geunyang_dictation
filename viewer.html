@@ -414,7 +414,7 @@ main.side #koHandle{display:block;position:absolute;top:0;bottom:0;
         <div class="row"><span>번역 글자</span><div class="step"><button data-s="kof-">−</button><b id="vKofs">14</b><button data-s="kof+">+</button></div></div>
         <div class="row"><span>줄간격</span><div class="step"><button data-s="lh-">−</button><b id="vLh">1.65</b><button data-s="lh+">+</button></div></div>
         <div class="row"><span>자료 폴더</span><span id="matDir" class="off">끔</span><button id="matPick">선택</button><button id="matClear" title="자동 정리 끄기" hidden>✕</button></div>
-        <div class="hint">과목을 정한 세션에 올린 PDF를 이 폴더의 과목 폴더로 복사해요. 같은 이름이 있으면 건너뜁니다.</div>
+        <div class="hint">세션에 PDF를 지정한 폴더 안에 정리해요.</div>
         <div class="row"><span>테마</span><select id="selTheme"><option value="auto">자동</option><option value="light">라이트</option><option value="dark">다크</option><option value="term">터미널 다크</option><option value="term-light">터미널 라이트</option></select></div>
         <div class="sep"></div>
         <div class="row"><span>agy 번역</span><span id="agySt">—</span></div>
@@ -1372,6 +1372,7 @@ function subjectOf(m){
   const t=(m.title||"").trim(); if(!t)return "";
   return (t.split(/[\s_]+/)[0]||"").replace(/\(.*$/,"");
 }
+function subjKey(s){return (s||"").replace(/[\s_\-·.]+/g,"").toLowerCase()}   // '머신러닝 2' = '머신러닝2'
 function groupMode(){return localStorage.getItem("sgroup")||"date"}
 async function loadSessions(){
   if(renaming||smenuOpen)return;
@@ -1386,9 +1387,10 @@ function renderSessList(){
     '</button><button class="tFilter" title="필터">'+ICON_SLIDER+'</button></span>';
   const bySubj=groupMode()==="subject";
   if(bySubj){   // 과목별: 최근 세션이 있는 과목이 위로, 과목 안은 최신순 (SESS 가 이미 최신순)
-    const groups=new Map();
-    for(const m of list){const g=subjectOf(m)||"기타";if(!groups.has(g))groups.set(g,[]);groups.get(g).push(m);}
-    list=[];for(const [g,arr] of groups)for(const m of arr){m._g=g;m._n=arr.length;list.push(m);}
+    const groups=new Map();   // 공백·대소문자만 다른 과목명은 한 그룹, 표시는 가장 최근 표기
+    for(const m of list){const g=subjectOf(m)||"기타", k=subjKey(g);
+      if(!groups.has(k))groups.set(k,{g,arr:[]});groups.get(k).arr.push(m);}
+    list=[];for(const {g,arr} of groups.values())for(const m of arr){m._g=g;m._n=arr.length;list.push(m);}
   }
   let html="",lastG=null,first=true;
   for(const m of list){
@@ -1404,7 +1406,8 @@ function renderSessList(){
     const recNow=ST&&ST.sid===m.id&&ST.state!=="idle";
     let name=m.title||m.id, sub=m.title?m.id:(m.preview||"");
     if(bySubj&&m.title&&g!=="기타"){   // 과목 접두어는 그룹 제목이 대신하니 카드에서는 뺀다
-      const rest=m.title.replace(new RegExp("^"+g.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"[\\s_]*"),"").trim();
+      const own=subjectOf(m);
+      const rest=m.title.replace(new RegExp("^"+own.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"[\\s_]*"),"").trim();
       if(rest)name=rest;
     }
     html+='<div class="sess'+(recNow?" rec":"")+(on?" on":"")+'" data-id="'+m.id+

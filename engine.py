@@ -560,8 +560,8 @@ def subjects_info(sid=None):
         if m.get("id") == sid:
             continue
         s = subject_of(m)
-        if s:
-            e = subs.setdefault(s, {"name": s, "count": 0, "last": m["id"]})
+        if s:   # '머신러닝 2' 와 '머신러닝2' 는 한 과목 — 표시는 가장 최근 표기
+            e = subs.setdefault(_norm(s), {"name": s, "count": 0, "last": m["id"]})
             e["count"] += 1
         if w1 is None:
             mm = re.search(r"(\d+)\s*주차", m.get("title") or "")
