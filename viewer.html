@@ -222,9 +222,9 @@ select{-webkit-appearance:none;appearance:none;padding:0 24px 0 10px;
 #tocHandle{flex:none;width:9px;cursor:col-resize;position:relative;margin-right:2px}
 #tocHandle::after{content:"";position:absolute;left:3px;top:14px;bottom:10px;width:2px;border-radius:2px;background:transparent}
 #tocHandle:hover::after,#tocHandle.drag::after{background:var(--accent)}
-#toc{flex:1;min-width:0;overflow-y:auto;padding:14px 0 10px;font-size:12px;line-height:1.35}
-#toc .tt{font-size:10.5px;letter-spacing:.04em;color:var(--ink-soft);margin:0 0 7px 10px;text-transform:uppercase}
-#toc a{display:block;padding:4px 9px 4px 10px;border-left:2px solid var(--line);color:var(--ink-soft);
+#toc{flex:1;min-width:0;overflow-y:auto;padding:14px 0 10px;font-size:13px;line-height:1.4}
+#toc .tt{font-size:11px;letter-spacing:.04em;color:var(--ink-soft);margin:0 0 8px 11px;text-transform:uppercase}
+#toc a{display:block;padding:6px 9px 6px 11px;border-left:2px solid var(--line);color:var(--ink-soft);
   cursor:pointer;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #toc a:hover{color:var(--ink)}
 #toc a.on{border-left-color:var(--accent);color:var(--ink);font-weight:500}
@@ -254,16 +254,24 @@ select{-webkit-appearance:none;appearance:none;padding:0 24px 0 10px;
 .fi.none{color:var(--ink-soft);justify-content:center}
 #fSt{font-size:11.5px;color:var(--accent);min-height:15px;margin-top:4px}
 #filesPop .fnote{font-size:11px;color:var(--ink-soft);line-height:1.45;margin-top:6px;padding-top:6px;border-top:1px solid var(--line)}
-.sec{display:flex;align-items:center;gap:8px;margin:28px 0 4px;font-size:12px;color:var(--ink-soft);
-  scroll-margin-top:70px}
-.sec b{font-weight:600;color:var(--ink);white-space:nowrap}
-.sec .pg{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10.5px;white-space:nowrap}
-.sec::after{content:"";flex:1;height:1px;background:var(--line)}
+/* 전사 본문의 섹션 제목 — 요약 목차와 같은 구간. 큰 글자·강조색 번호·위아래 여백·구분선 */
+.sec{display:flex;align-items:baseline;gap:10px;margin:56px 0 18px;padding-bottom:9px;
+  border-bottom:1px solid var(--line-strong);font-size:16px;color:var(--ink-soft);scroll-margin-top:70px;
+  -webkit-user-select:none;user-select:none}   /* 드래그 복사에 딸려오지 않게 */
+.sec:first-child{margin-top:14px}
+.sec .no{flex:none;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px;font-weight:600;
+  color:var(--accent);background:var(--accent-soft);border-radius:6px;padding:1px 7px;align-self:center}
+.sec b{font-weight:700;color:var(--ink);line-height:1.35}
+.sec .pg{flex:none;margin-left:auto;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;
+  white-space:nowrap;align-self:center}
 #sumView[hidden]{display:none}
 #sumView{max-width:720px;margin:0 auto;padding-top:6px}
 .sumBar{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ink-soft);margin:14px 0 4px}
 .sumBar button{height:24px;line-height:22px;font-size:12px;padding:0 10px}
 .sumBar .sp{margin-right:auto}
+.sumFoot{text-align:center;margin:56px 0 24px;font-size:11.5px}
+.sumFoot a{color:var(--ink-soft);opacity:.55;cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
+.sumFoot a:hover{opacity:1}
 .sumEmpty{text-align:center;margin-top:12vh;color:var(--ink-soft);font-size:13.5px;line-height:1.7}
 .sumEmpty p{max-width:420px;margin:0 auto 16px}
 .sumEmpty button{height:36px;padding:0 20px;font-size:14px;border-radius:10px}
@@ -288,7 +296,8 @@ select{-webkit-appearance:none;appearance:none;padding:0 24px 0 10px;
 .sum .spages{display:inline-block;font-size:12.5px;color:var(--ink);background:var(--accent-soft);
   border-left:3px solid var(--accent);padding:4px 10px;border-radius:0 8px 8px 0;margin:2px 0 8px}
 .sum .smeta{display:flex;gap:12px;align-items:center;font-size:11.5px;color:var(--ink-soft);
-  margin:-4px 0 8px;font-family:"IBM Plex Mono",ui-monospace,monospace}
+  margin:-4px 0 8px;font-family:"IBM Plex Mono",ui-monospace,monospace;-webkit-user-select:none;user-select:none}
+.sumBar,.sumFoot,#toc{-webkit-user-select:none;user-select:none}
 .sum .smeta a{color:var(--accent);cursor:pointer;text-decoration:none}
 .sum .smeta a:hover{text-decoration:underline}
 /* 과목 칩 (맥락 박스) */
@@ -825,8 +834,8 @@ function secAnchors(lines){
   return at;
 }
 function secHtml(k){
-  const sec=outline()[k];
-  return '<div class="sec" data-k="'+k+'"><b>'+esc(sec.title)+'</b>'+
+  const sec=outline()[k], m=sec.title.match(/^(\d+)[.)]\s*(.+)$/);
+  return '<div class="sec" data-k="'+k+'">'+(m?'<span class="no">'+m[1]+'</span><b>'+esc(m[2])+'</b>':'<b>'+esc(sec.title)+'</b>')+
     (sec.pages?'<span class="pg">'+esc(sec.pages)+'</span>':'')+'</div>';
 }
 function renderLines(lines){
@@ -946,9 +955,10 @@ function renderSummary(){
   if(md){
     const at=sessCache.summary_at?new Date(sessCache.summary_at):null;
     v.innerHTML='<div class="sumBar"><span class="sp">'+(at?"정리 "+at.toLocaleString("ko-KR",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}):"")+
-      '</span>'+(busy?'<span>✦ 다시 만드는 중… '+esc(sm.note||"")+'</span>':'<button id="sumRedo" title="전사·자료로 요약을 다시 만들어요">✦ 다시 만들기</button>')+
-      '</div><div class="sum">'+md2html(md)+'</div>';
-    if($("sumRedo"))$("sumRedo").onclick=startSummary;
+      '</span>'+(busy?'<span>✦ 다시 만드는 중… '+esc(sm.note||"")+'</span>':'')+
+      '</div><div class="sum">'+md2html(md)+'</div>'+
+      (busy?'':'<div class="sumFoot"><a id="sumRedo" title="전사·자료로 요약을 다시 만들어요 (지금 요약은 덮어써요)">요약 다시 만들기</a></div>');
+    if($("sumRedo"))$("sumRedo").onclick=()=>{if(confirm("요약을 다시 만들까요? 지금 요약은 덮어써요."))startSummary()};
     v.querySelectorAll(".smeta a[data-l]").forEach(a=>a.onclick=()=>gotoLine(+a.dataset.l));
   }else if(busy){
     v.innerHTML='<div class="sumEmpty"><p>✦ '+esc(sm.note||"요약 중…")+'</p><p style="font-size:12.5px">자료는 올릴 때 미리 텍스트로 바꿔 둬요(안 된 게 있으면 먼저 바꾸고) → 다듬기 → 요약. 이 화면을 떠나도 계속 돼요.</p></div>';
