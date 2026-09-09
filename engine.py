@@ -20,18 +20,22 @@ for _n in ("whisperlivekit",):
 ROOT = pathlib.Path(__file__).resolve().parent
 TR = ROOT / "transcripts"
 CONFIG = ROOT / "config.json"
-VERSION = "1.1.0"          # release.sh 가 여기를 올린다
+VERSION = "1.2.0"          # release.sh 가 여기를 올린다
 UPDATE_REPO = "ChanchanCode/geunyang_dictation"
 MODEL = "mlx-community/whisper-large-v3-turbo"
 SR = 16000
 FFMPEG = shutil.which("ffmpeg") or next(
     (p for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
      if pathlib.Path(p).exists()), "ffmpeg")
-AGY_MODEL = "gemini-3.7-flash-low"
+AGY_MODEL = "gemini-3.8-flash-low"          # 실시간 번역 — 짧은 배치, 속도·쿼터 우선
+AGY_MODEL_HEAVY = "gemini-3.8-flash-medium" # 다듬기·요약·자료 변환 — 긴 문맥, 정확도 우선
 AGY_TURNS_MAX = 12
 CTX_MAX = 1200           # 세션 맥락(meta.context) 최대 길이
 CTX_FILE_EXT = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".txt", ".md"}
 CTX_FILES_MAX_MB = 60
+CTX_TEXT_DIR = "ctx_text"   # 자료(PDF·이미지) → 텍스트 변환본. 다듬기·요약이 참고한다
+MAT_EXT = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic"}  # 자료 폴더로 복사하는 종류
+DOW = "월화수목금토일"
 JUNK = {"thank you.", "thanks for watching.", "thanks for watching!", "you", "bye.",
         "시청해주셔서 감사합니다.", "구독과 좋아요 부탁드립니다.", "감사합니다."}
 
@@ -228,9 +232,13 @@ def agy_accounts():
 
 
 class Agy:
-    def __init__(self, workdir):
+    """agy 사이드카. agent=None 이면 기본 에이전트(요약·자료 변환처럼 자유 형식 답이 필요할 때).
+    add_dir 를 주면 그 폴더의 파일을 Gemini 가 view_file 로 직접 읽는다(PDF·이미지)."""
+
+    def __init__(self, workdir, model=AGY_MODEL, agent="scribe", add_dir=None, print_timeout="5m"):
         self.bin = shutil.which("agy") or str(pathlib.Path.home() / ".local/bin/agy")
         self.workdir = workdir
+        self.model, self.agent, self.add_dir, self.print_timeout = model, agent, add_dir, print_timeout
         self.proc, self.q, self.turns = None, None, 0
         self.account = None
 
@@ -248,13 +256,19 @@ class Agy:
         q.put(("eof", {}))
 
     def start(self):
-        ensure_agent()
+        if self.agent:
+            ensure_agent()
         self.q = queue.Queue(); self.turns = 0
         self.account = load_cfg().get("agy_account", "main")
+        args = [self.bin, "--print=", "--model", self.model,
+                "--input-format", "stream-json", "--output-format", "stream-json",
+                "--print-timeout", self.print_timeout]
+        if self.agent:
+            args += ["--agent", self.agent]
+        if self.add_dir:
+            args += ["--add-dir", str(self.add_dir), "--dangerously-skip-permissions"]
         self.proc = subprocess.Popen(
-            [self.bin, "--print=", "--agent", "scribe", "--model", AGY_MODEL,
-             "--input-format", "stream-json", "--output-format", "stream-json"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, cwd=self.workdir, env=_acct_env(self.account))
         threading.Thread(target=self._reader, args=(self.proc, self.q), daemon=True).start()
         deadline = time.time() + 40
@@ -269,11 +283,14 @@ class Agy:
                 break
         self.stop(); return False
 
-    def turn(self, prompt, timeout=180):
+    def turn(self, prompt, timeout=180, preamble=""):
+        """preamble 은 프로세스가 새로 뜬 첫 턴에만 앞에 붙는다(긴 참고자료를 매 턴 다시 보내지 않게)."""
         if self.proc is None or self.proc.poll() is not None or self.turns >= AGY_TURNS_MAX:
             self.stop()
             if not self.start():
                 return None
+        if preamble and self.turns == 0:
+            prompt = preamble + prompt
         self.turns += 1
         try:
             self.proc.stdin.write(json.dumps(
@@ -379,15 +396,259 @@ def digest_context(sess, text=""):
     return out[:CTX_MAX], ""
 
 
-POLISH_HEAD = """다음은 대학원 강의 자동 전사(ASR) 결과의 일부다. 각 줄을 다듬어라.
+# ---------- 자료(PDF·이미지) → 텍스트 변환 ----------
+# 업로드 직후 백그라운드로 돌고, 다듬기·요약이 용어 표기·페이지 대응에 쓴다. ctx_text/<파일명>.md
 
-원문(영어, 가끔 한국어 섞임) 교정:
-- 인식기가 명백히 잘못 들은 것만 고친다 — 잘못 들린 단어, 망가진 전문용어·고유명사,
-  붙거나 끊긴 어절, 명백한 문법 파손, 빠진 문장부호.
-- 앞뒤 줄을 근거로 화자가 실제로 무슨 말을 했는지 판단한다.
-- 화자의 표현·어순·상세도는 그대로 둔다. 바꿔 말하기·요약·축약·확장·내용 추가 금지.
-  줄을 합치거나 나누지 마라.
-- 멀쩡한 줄은 그대로 다시 쓴다. 복구 불가능할 만큼 뭉개진 줄도 그대로 둔다.
+CONVERT_PROMPT = """Transcribe the document "{name}" in the workspace directory into plain Markdown text,
+completely and faithfully, page by page. Read it with view_file (every page).
+Rules:
+- Before each page's content write one line exactly: --- p.N ---   (N = physical page number, from 1)
+- Copy all text on the page in reading order: titles, bullets, tables (as Markdown tables),
+  equations (as LaTeX in $...$), captions. Describe each figure/chart in one line: [Figure: ...]
+- Do not summarize, skip, translate, or comment. Keep the original language.
+- If the document has more than 120 pages, transcribe the first 120 and end with: --- truncated ---
+Output only the transcription, no preamble, no code fence.
+"""
+
+_conv = {}                       # sid -> {"busy","note","error"}
+_conv_lock = threading.Lock()
+
+def conv_status(sid):
+    return dict(_conv.get(sid) or {})
+
+def ctx_text_files(sess):
+    d = sess / CTX_TEXT_DIR
+    return sorted(p.name for p in d.iterdir() if p.is_file() and p.suffix == ".md") \
+        if d.is_dir() else []
+
+def ctx_pending(sess):
+    """아직 텍스트로 변환되지 않은 자료 파일 이름."""
+    cd = sess / "ctx"
+    if not cd.is_dir():
+        return []
+    return [p.name for p in sorted(cd.iterdir())
+            if p.is_file() and not p.name.startswith(".")
+            and not (sess / CTX_TEXT_DIR / (p.name + ".md")).exists()]
+
+def _pdftotext(path):
+    """poppler 가 있으면 페이지 단위 로컬 추출(Gemini 실패 시 대체)."""
+    if not shutil.which("pdftotext"):
+        return ""
+    try:
+        r = subprocess.run(["pdftotext", "-layout", str(path), "-"],
+                           capture_output=True, text=True, timeout=120)
+    except Exception:
+        return ""
+    if r.returncode != 0:
+        return ""
+    out = []
+    for k, pg in enumerate(r.stdout.split("\f"), 1):
+        pg = re.sub(r"[ \t]+\n", "\n", pg).strip()
+        if pg:
+            out.append(f"--- p.{k} ---\n{pg}")
+    return "\n\n".join(out)
+
+def _strip_fence(t):
+    t = (t or "").strip()
+    m = re.match(r"^```[a-zA-Z]*\n(.*?)\n```$", t, re.S)
+    return m.group(1).strip() if m else t
+
+def convert_one(sess, name):
+    """ctx/<name> → ctx_text/<name>.md. 텍스트 파일은 복사, PDF·이미지는 Gemini(view_file)로
+    페이지별 전사. 결과 텍스트(실패 시 '')."""
+    src, dst = sess / "ctx" / name, sess / CTX_TEXT_DIR / (name + ".md")
+    dst.parent.mkdir(exist_ok=True)
+    text = ""
+    if src.suffix.lower() in (".txt", ".md"):
+        text = src.read_text(errors="replace")
+    else:
+        agy = Agy(str(ROOT / ".agywork"), model=AGY_MODEL_HEAVY, agent=None,
+                  add_dir=sess / "ctx", print_timeout="12m")
+        if agy.available():
+            out = _strip_fence(agy.turn(CONVERT_PROMPT.format(name=name), timeout=720))
+            agy.stop()
+            if out and "--- p." in out and len(out) >= 300:
+                text = out
+        if not text and src.suffix.lower() == ".pdf":
+            text = _pdftotext(src)
+    if not text.strip():
+        return ""
+    dst.write_text(text)
+    return text
+
+def convert_ctx(sess, note=None):
+    """미변환 자료를 순차 변환. note(msg) 로 진행 표시. 실패한 이름 목록 반환.
+    다른 스레드가 이미 변환 중이면 곧바로 [] (호출자는 wait_conv 로 기다린다)."""
+    sid = sess.name
+    pend = ctx_pending(sess)
+    if not pend:
+        return []
+    with _conv_lock:
+        if _conv.get(sid, {}).get("busy"):
+            return []
+        _conv[sid] = {"busy": True, "note": "강의자료 변환 준비 중…", "error": ""}
+    failed = []
+    try:
+        for k, name in enumerate(pend):
+            msg = f"강의자료 변환 중… ({k + 1}/{len(pend)}) {name}"
+            _conv[sid]["note"] = msg
+            if note:
+                note(msg)
+            try:
+                if not convert_one(sess, name):
+                    failed.append(name)
+            except Exception:
+                logging.exception("자료 변환 실패")
+                failed.append(name)
+    finally:
+        _conv[sid] = {"busy": False, "note": "",
+                      "error": (f"자료 변환 실패: {', '.join(failed)}"[:120] if failed else "")}
+    return failed
+
+def wait_conv(sid, timeout=900):
+    t0 = time.time()
+    while _conv.get(sid, {}).get("busy") and time.time() - t0 < timeout:
+        time.sleep(1)
+
+def ctx_text_all(sess, budget=30000):
+    """변환된 자료를 파일별 머리말과 함께 합친다. budget 자 초과분은 자른다."""
+    parts = []
+    for n in ctx_text_files(sess):
+        t = (sess / CTX_TEXT_DIR / n).read_text(errors="replace").strip()
+        if t:
+            parts.append(f"=== {n[:-3]} ===\n{t}")
+    out = "\n\n".join(parts)
+    if len(out) > budget:
+        out = out[:budget] + "\n… (이하 생략)"
+    return out
+
+
+# ---------- 과목 · 주차 · 제목 추천 · 자료 폴더 ----------
+
+def subject_of(meta):
+    """meta.subject 가 있으면 그것, 없으면 제목의 첫 토큰('재무론2 2주차_1' → '재무론2')."""
+    s = (meta.get("subject") or "").strip()
+    if s:
+        return s
+    t = (meta.get("title") or "").strip()
+    if not t:
+        return ""
+    return re.sub(r"\(.*$", "", re.split(r"[\s_]+", t)[0]).strip()
+
+def _norm(s):
+    return re.sub(r"[\s_\-·.]+", "", s or "").lower()
+
+def _sid_date(sid):
+    try:
+        return datetime.date.fromisoformat((sid or "")[:10])
+    except ValueError:
+        return None
+
+def _monday(d):
+    return d - datetime.timedelta(days=d.weekday())
+
+def subjects_info(sid=None):
+    """과목 목록(최근 사용순) + sid 세션 날짜의 주차·요일. 주차는 가장 최근 'N주차' 제목이
+    함의하는 1주차 월요일 기준(사용자 번호 매김을 따른다), 없으면 첫 세션 주를 1주차로."""
+    sessions = list_sessions()               # 최신순
+    subs, w1, earliest = {}, None, None
+    for m in sessions:
+        d = _sid_date(m.get("id"))
+        if d is None:
+            continue
+        earliest = d if earliest is None or d < earliest else earliest
+        if m.get("id") == sid:
+            continue
+        s = subject_of(m)
+        if s:
+            e = subs.setdefault(s, {"name": s, "count": 0, "last": m["id"]})
+            e["count"] += 1
+        if w1 is None:
+            mm = re.search(r"(\d+)\s*주차", m.get("title") or "")
+            if mm:
+                w1 = _monday(d) - datetime.timedelta(days=7 * (int(mm.group(1)) - 1))
+    d = _sid_date(sid) or datetime.date.today()
+    if w1 is None:
+        w1 = _monday(earliest or d)
+    week = max(1, (_monday(d) - w1).days // 7 + 1)
+    return {"subjects": list(subs.values()), "week": week, "dow": DOW[d.weekday()]}
+
+def suggest_title(sid, subject):
+    """'재무론2_2주차(화)'. 같은 제목이 이미 있으면 _2, _3…"""
+    info = subjects_info(sid)
+    base = f"{subject}_{info['week']}주차({info['dow']})"
+    taken = {m.get("title") for m in list_sessions() if m.get("id") != sid}
+    t, k = base, 2
+    while t in taken:
+        t = f"{base}_{k}"; k += 1
+    return t
+
+def guess_subject(name, exclude_sid=None):
+    """자료 파일명으로 과목 추정. 파일명에 과목명이 들어 있거나, 이전 세션 자료와
+    (숫자를 뺀) 이름 앞부분이 길게 같으면 그 과목. 확신 없으면 ''."""
+    nn = _norm(pathlib.Path(name).stem)
+    strip = lambda s: re.sub(r"\d+", "", _norm(pathlib.Path(s).stem))
+    best = ("", 0)
+    for m in list_sessions():
+        if m.get("id") == exclude_sid:
+            continue
+        s = subject_of(m)
+        if not s:
+            continue
+        if _norm(s) and _norm(s) in nn:
+            return s
+        cd = TR / m["id"] / "ctx"
+        if cd.is_dir():
+            for p in cd.iterdir():
+                a, b = strip(name), strip(p.name)
+                k = len(os.path.commonprefix([a, b]))
+                if k >= 10 and k >= 0.6 * min(len(a), len(b)) and k > best[1]:
+                    best = (s, k)
+    return best[0]
+
+def file_materials(sess, meta, names=None):
+    """과목이 정해진 세션의 자료(PDF·이미지)를 설정한 자료 폴더/<과목>/ 로 복사.
+    과목 폴더는 공백·대소문자 무시로 찾고 없으면 만든다. 같은 이름이 있으면 건너뛴다.
+    자료 폴더 미설정·과목 미지정이면 아무것도 안 한다. 복사한 이름 목록 반환."""
+    root, subj = load_cfg().get("mat_dir") or "", subject_of(meta)
+    if not root or not subj:
+        return []
+    root = pathlib.Path(root).expanduser()
+    if not root.is_dir():
+        return []
+    key = _norm(subj)
+    dst = next((d for d in sorted(root.iterdir()) if d.is_dir() and _norm(d.name) == key),
+               None) or (root / subj)
+    cd, done = sess / "ctx", []
+    if not cd.is_dir():
+        return []
+    for p in sorted(cd.iterdir()):
+        if not p.is_file() or p.name.startswith(".") or p.suffix.lower() not in MAT_EXT:
+            continue
+        if names is not None and p.name not in names:
+            continue
+        t = dst / p.name
+        if t.exists():
+            continue
+        try:
+            dst.mkdir(exist_ok=True)
+            shutil.copy2(p, t); done.append(p.name)
+        except OSError:
+            logging.exception("자료 폴더 복사 실패")
+    return done
+
+
+POLISH_HEAD = """다음은 대학원 강의를 자동 받아쓰기(ASR)한 결과의 일부다. 줄마다 원문을 교정한다.
+
+원문 교정 (영어, 가끔 한국어 섞임) — 번역문만큼 원문도 매끄럽게 읽히도록 정리한다:
+- 잘못 들린 단어·구절을 앞뒤 문맥과 강의자료에 맞게 바로잡는다: 소리는 비슷한데 뜻이 안 통하는 단어,
+  깨진 전문용어·고유명사·수식 표현, 잘못 붙거나 끊긴 어절, 어긋난 시제·수 일치, 빠지거나 엉뚱한 문장부호.
+- 받아쓰기 잡음을 걷어낸다: 말더듬과 같은 말 반복("the the", "I think I think"), 뜻 없는 간투사
+  (um, uh, you know, like, sort of — 뜻이 있으면 남긴다), 시작했다 만 어구.
+- 전문용어·이름·기호는 강의자료 표기를 따른다.
+- 화자가 한 말·순서·상세도는 지킨다. 요약·축약·확장·의역·내용 추가 금지.
+- 줄을 합치거나 나누지 마라. 입력이 N줄이면 출력도 N줄, 번호 그대로.
+- 복구 불가능하게 뭉개진 줄은 그대로 둔다.
 """
 POLISH_KO = """
 번역:
@@ -400,6 +661,69 @@ POLISH_EN = """
 출력 형식 — 각 줄을 정확히 이 꼴로, 다른 말은 쓰지 마라:
 N. <교정한 원문>
 """
+
+def polish_preamble(ctx, slides):
+    """새 사이드카 프로세스의 첫 턴에만 붙는 참고자료(맥락 노트 + 강의자료 본문)."""
+    s = f"수업 맥락: {ctx}\n\n" if ctx else ""
+    if slides:
+        s += ("강의자료 본문 (참고용 — 용어·표기·수식은 이걸 따른다. 자료에만 있고 화자가 말하지 않은 "
+              "내용을 끌어오지는 마라):\n" + slides + "\n\n")
+    return s
+
+
+SUMMARY_PROMPT = """너는 대학원 강의 노트를 만드는 조교다. 아래 강의 전사(자동 받아쓰기를 교정한 것)와
+강의자료를 읽고, 한국어로 '강의 요약·정리본'을 Markdown 으로 쓴다.
+
+원칙:
+- 담백하게. 미사여구·감상·자기평가 없이 내용만. 대학원 수준 독자라 기초 개념 설명은 생략한다.
+- 전문용어는 영어 그대로 쓰고 필요하면 괄호로 한국어를 붙인다. 수식은 $...$ (LaTeX).
+- 강의에서 실제로 말한 내용만 쓴다. 강의자료에만 있고 언급되지 않은 내용은 넣지 않는다.
+- 교수가 강조한 점, 직관적 설명·예시, 시험·과제·공지는 놓치지 마라.
+- 강의자료가 있으면 어느 페이지를 다뤘는지 대응시킨다 (자료의 '--- p.N ---' 표시가 페이지다).
+
+출력 형식 — 정확히 이 구조로. 다른 말은 쓰지 마라:
+
+# <강의 제목 한 줄>
+오늘 다룬 슬라이드: p.<시작>–<끝>   (자료가 없거나 대응이 안 되면 "자료 없음")
+
+## 1. <섹션 제목>
+[줄 <시작번호>–<끝번호> | 슬라이드 p.<x>–<y>]
+- 핵심 내용을 불릿으로. 정의·주장·모형·수식·예시·교수 코멘트. 필요한 만큼 (3~10개)
+
+## 2. <섹션 제목>
+[줄 …]
+- …
+(강의 흐름을 따라 5~12개 섹션. 전사 순서대로, 줄 번호 구간은 겹치지 않게)
+
+## 핵심 용어
+- **term** — 한 줄 설명
+
+## 공지·과제·시험
+- (있을 때만. 없으면 이 섹션을 통째로 생략)
+
+## 한눈에
+전체 흐름을 3~5문장으로.
+
+규칙: 번호 섹션 제목 바로 다음 줄의 대괄호 표시는 반드시 쓴다. 줄 번호는 아래 전사의 [번호]를 그대로 쓴다.
+슬라이드 대응이 없으면 "[줄 12–34]" 처럼 슬라이드 부분을 뺀다.
+"""
+
+def parse_outline(md):
+    """summary.md → [{title, start, end, pages}]. start 는 전사 라인의 i (없으면 None)."""
+    secs, cur = [], None
+    for raw in (md or "").splitlines():
+        line = raw.strip()
+        m = re.match(r"^##\s+(.+?)\s*$", line)
+        if m:
+            cur = {"title": m.group(1), "start": None, "end": None, "pages": ""}
+            secs.append(cur); continue
+        if cur is not None and cur["start"] is None and line.startswith("["):
+            m = re.match(r"^\[\s*줄\s*(\d+)(?:\s*[–\-~]\s*(\d+))?\s*(?:\|\s*슬라이드\s*([^\]]*))?\]", line)
+            if m:
+                cur["start"] = int(m.group(1))
+                cur["end"] = int(m.group(2)) if m.group(2) else None
+                cur["pages"] = (m.group(3) or "").strip()
+    return secs
 
 def parse_polish(out, want_ko):
     """'N. 원문 ||| 번역' 파싱 → {번호: (원문, 번역 or None)}."""
@@ -591,6 +915,7 @@ class Engine:
         self._ctx = ""
         self._edited = False     # 사용자가 라인을 지우거나 고쳤나 (전부 지운 세션 저장 판단용)
         self.polish = {"sid": None, "busy": False, "note": "", "error": ""}
+        self.summary = {"sid": None, "busy": False, "note": "", "error": ""}
         self._flush_translate = threading.Event()
 
     # -- 스레드/루프 유틸
@@ -956,61 +1281,133 @@ class Engine:
         return True, ""
 
     def _polish_job(self, sid, sess):
-        def note(t, err=""):
-            self.polish = {"sid": sid, "busy": self.polish["busy"], "note": t, "error": err}
+        def note(t):
+            self.polish = {"sid": sid, "busy": True, "note": t, "error": ""}
             self.bump()
         try:
-            lines = json.loads((sess / "lines.json").read_text())
-            for k, l in enumerate(lines):
-                l.setdefault("i", k)
-            if not lines:
-                raise ValueError("다듬을 라인이 없어요")
-            try:
-                ctx = json.loads((sess / "meta.json").read_text()).get("context", "")
-            except Exception:
-                ctx = ""
-            want_ko = self.cfg.get("translate") != "off"
-            head = ((f"수업 맥락: {ctx}\n\n" if ctx else "") + POLISH_HEAD
-                    + (POLISH_KO if want_ko else POLISH_EN))
-            agy = Agy(str(ROOT / ".agywork"))
-            (ROOT / ".agywork").mkdir(exist_ok=True)
-            STEP, fails = 25, 0
-            for i in range(0, len(lines), STEP):
-                chunk = lines[i:i + STEP]
-                note(f"다듬는 중… {i}/{len(lines)}줄")
-                out = agy.turn(head + "\n" + "\n".join(
-                    f"{k+1}. {l['text']}" for k, l in enumerate(chunk)))
-                got = parse_polish(out, want_ko)
-                if not got:
-                    fails += 1
-                    if fails >= 3:
-                        raise RuntimeError("Gemini 응답을 받지 못했어요 (agy 로그인 확인)")
+            self._polish_core(sid, sess, note)
+            self.polish = {"sid": sid, "busy": False, "note": "다듬기 완료", "error": ""}
+        except Exception as e:
+            self.polish = {"sid": sid, "busy": False, "note": "", "error": f"다듬기 실패: {e}"[:140]}
+        self.bump()
+
+    def _polish_core(self, sid, sess, note):
+        """전체 문맥 다듬기 본체. 자료가 아직 텍스트로 안 바뀌었으면 먼저 변환해 참고한다.
+        완료 시 meta.polished=True. 실패는 예외로."""
+        lines = json.loads((sess / "lines.json").read_text())
+        for k, l in enumerate(lines):
+            l.setdefault("i", k)
+        if not lines:
+            raise ValueError("다듬을 라인이 없어요")
+        if ctx_pending(sess):
+            if conv_status(sid).get("busy"):
+                note("강의자료 변환을 기다리는 중…"); wait_conv(sid)
+            else:
+                convert_ctx(sess, note)
+        try:
+            ctx = json.loads((sess / "meta.json").read_text()).get("context", "")
+        except Exception:
+            ctx = ""
+        want_ko = self.cfg.get("translate") != "off"
+        head = POLISH_HEAD + (POLISH_KO if want_ko else POLISH_EN)
+        pre = polish_preamble(ctx, ctx_text_all(sess, 24000))
+        agy = Agy(str(ROOT / ".agywork"), model=AGY_MODEL_HEAVY, print_timeout="8m")
+        (ROOT / ".agywork").mkdir(exist_ok=True)
+        STEP, fails = 25, 0
+        for i in range(0, len(lines), STEP):
+            chunk = lines[i:i + STEP]
+            note(f"다듬는 중… {i}/{len(lines)}줄")
+            out = agy.turn(head + "\n" + "\n".join(
+                f"{k+1}. {l['text']}" for k, l in enumerate(chunk)), timeout=420, preamble=pre)
+            got = parse_polish(out, want_ko)
+            if not got:
+                fails += 1
+                if fails >= 3:
+                    agy.stop()
+                    raise RuntimeError("Gemini 응답을 받지 못했어요 (agy 로그인 확인)")
+                continue
+            for k, l in enumerate(chunk):
+                g = got.get(k + 1)
+                if not g:
                     continue
-                for k, l in enumerate(chunk):
-                    g = got.get(k + 1)
-                    if not g:
-                        continue
-                    en, ko = g
-                    o = l["text"]
-                    # 길이가 크게 어긋나면 환각으로 보고 원문 유지
-                    if en and 0.5 * len(o) <= len(en) <= 2 * len(o) + 20:
-                        if en != o and not l.get("text0"):
-                            l["text0"] = o          # 원본 보존 (되돌리기용)
-                        l["text"] = en
-                    if ko and l.get("ko") != "":
-                        l["ko"] = ko
-                write_session(sess, lines)          # 청크마다 저장 — 중단돼도 진행분은 남는다
-            agy.stop()
+                en, ko = g
+                o = l["text"]
+                # 길이가 크게 어긋나면 환각으로 보고 원문 유지 (간투사 제거로 조금 짧아지는 건 허용)
+                if en and 0.4 * len(o) <= len(en) <= 2 * len(o) + 20:
+                    if en != o and not l.get("text0"):
+                        l["text0"] = o          # 원본 보존 (되돌리기용)
+                    l["text"] = en
+                if ko and l.get("ko") != "":
+                    l["ko"] = ko
+            write_session(sess, lines)          # 청크마다 저장 — 중단돼도 진행분은 남는다
+        agy.stop()
+        mp = sess / "meta.json"
+        try:
+            meta = json.loads(mp.read_text())
+        except Exception:
+            meta = {"id": sid}
+        meta["polished"] = True
+        mp.write_text(json.dumps(meta, ensure_ascii=False))
+        return lines
+
+    # -- 강의 요약·정리본 (자료 변환 → 필요하면 다듬기 → Gemini 한 턴). 종료 후 버튼으로 실행.
+    def start_summary(self, sid):
+        sess = TR / sid
+        if not (sess / "lines.json").exists():
+            return False, "요약할 내용이 없어요"
+        if self.state != "idle":
+            return False, "녹음이 끝난 뒤에 요약할 수 있어요"
+        if self.polish["busy"] or self.summary["busy"]:
+            return False, "이미 작업 중이에요"
+        if not Agy(str(ROOT / ".agywork")).available():
+            return False, "agy(Antigravity CLI)가 없어 요약을 못 해요"
+        self.summary = {"sid": sid, "busy": True, "note": "준비 중…", "error": ""}
+        self.bump()
+        threading.Thread(target=self._summary_job, args=(sid, sess), daemon=True).start()
+        return True, ""
+
+    def _summary_job(self, sid, sess):
+        def note(t):
+            self.summary = {"sid": sid, "busy": True, "note": t, "error": ""}
+            self.bump()
+        try:
+            if ctx_pending(sess):
+                if conv_status(sid).get("busy"):
+                    note("강의자료 변환을 기다리는 중…"); wait_conv(sid)
+                else:
+                    convert_ctx(sess, note)
             mp = sess / "meta.json"
             try:
                 meta = json.loads(mp.read_text())
             except Exception:
                 meta = {"id": sid}
-            meta["polished"] = True
+            if not meta.get("polished"):
+                self._polish_core(sid, sess, note)
+                meta = json.loads(mp.read_text())
+            lines = json.loads((sess / "lines.json").read_text())
+            for k, l in enumerate(lines):
+                l.setdefault("i", k)
+            if not lines:
+                raise ValueError("요약할 라인이 없어요")
+            ctx = meta.get("context", "")
+            slides = ctx_text_all(sess, 40000)
+            prompt = SUMMARY_PROMPT + (f"\n수업 맥락: {ctx}\n" if ctx else "")
+            if slides:
+                prompt += "\n=== 강의자료 ===\n" + slides + "\n"
+            prompt += "\n=== 강의 전사 ===\n" + "\n".join(f"[{l['i']}] {l['text']}" for l in lines)
+            note("요약 만드는 중… (몇 분 걸려요)")
+            agy = Agy(str(ROOT / ".agywork"), model=AGY_MODEL_HEAVY, agent=None, print_timeout="12m")
+            out = _strip_fence(agy.turn(prompt, timeout=720))
+            agy.stop()
+            if not out or "## " not in out:
+                raise RuntimeError("Gemini 응답을 받지 못했어요 (agy 로그인 확인)")
+            (sess / "summary.md").write_text(out)
+            meta["summary_at"] = datetime.datetime.now().isoformat(timespec="seconds")
             mp.write_text(json.dumps(meta, ensure_ascii=False))
-            self.polish = {"sid": sid, "busy": False, "note": "다듬기 완료", "error": ""}
+            self.summary = {"sid": sid, "busy": False, "note": "요약 완료", "error": ""}
         except Exception as e:
-            self.polish = {"sid": sid, "busy": False, "note": "", "error": f"다듬기 실패: {e}"[:140]}
+            logging.exception("요약 실패")
+            self.summary = {"sid": sid, "busy": False, "note": "", "error": f"요약 실패: {e}"[:140]}
         self.bump()
 
     # -- 라인 편집 (HTTP용). 활성 세션은 메모리, 아니면 디스크.
@@ -1056,7 +1453,7 @@ class Engine:
                     "lines": self.lines,
                     "live": [{"s": s, "e": e, "text": t} for s, e, t in self.live],
                     "live_buffer": self._live_tail(), "fixed_end": self.fixed_end,
-                    "polish": dict(self.polish)}
+                    "polish": dict(self.polish), "summary": dict(self.summary)}
 
     def _live_tail(self):
         """라이브 박스에 보일 텍스트 = 마지막 확정 라인 이후. lock 안에서 호출.
@@ -1086,6 +1483,11 @@ class Engine:
                 self.cfg[key] = val
             else:
                 return
+        elif key == "mat_dir":          # 자료 자동 정리 폴더 — 빈 문자열이면 끔
+            v = str(val or "").strip()
+            if v and not pathlib.Path(v).expanduser().is_dir():
+                return
+            self.cfg[key] = v
         elif key in CFG_NUM:
             try:
                 v = float(val)

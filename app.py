@@ -22,6 +22,30 @@ def ctx_files(sid):
         if cd.is_dir() else []
 
 
+def read_meta(sid):
+    try:
+        return json.loads((eng.TR / sid / "meta.json").read_text())
+    except Exception:
+        return {"id": sid}
+
+
+def write_meta(sid, meta):
+    (eng.TR / sid / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
+
+
+def set_subject(sid, subject, title=None):
+    """과목 지정(+제목). 제목을 안 주면 제목이 비었거나 자동 제목일 때만 추천 제목으로 바꾼다.
+    과목이 정해졌으니 이미 올린 자료를 자료 폴더로 복사한다."""
+    meta = read_meta(sid)
+    meta["subject"] = subject
+    if title:
+        meta["title"] = title; meta["title_auto"] = False
+    elif not meta.get("title") or meta.get("title_auto"):
+        meta["title"] = eng.suggest_title(sid, subject); meta["title_auto"] = True
+    write_meta(sid, meta)
+    return meta, eng.file_materials(eng.TR / sid, meta)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -57,19 +81,23 @@ class Handler(BaseHTTPRequestHandler):
                              r"\*\*(\d\d:\d\d:\d\d)\*\* (.+)(?:\n> (.+))?", md)]
             for k, l in enumerate(lines):
                 l.setdefault("i", k)   # 라인 편집용 안정 키
-            ctx = ""
-            try:
-                ctx = json.loads((eng.TR / sid / "meta.json").read_text()).get("context", "")
-            except Exception:
-                pass
-            polished = False
-            try:
-                polished = bool(json.loads(
-                    (eng.TR / sid / "meta.json").read_text()).get("polished"))
-            except Exception:
-                pass
-            self._send(json.dumps({"lines": lines, "context": ctx, "polished": polished,
-                                   "ctx_files": ctx_files(sid)}, ensure_ascii=False).encode())
+            meta = read_meta(sid)
+            sf = eng.TR / sid / "summary.md"
+            summary = sf.read_text() if sf.exists() else ""
+            self._send(json.dumps({
+                "lines": lines, "context": meta.get("context", ""),
+                "polished": bool(meta.get("polished")), "ctx_files": ctx_files(sid),
+                "ctx_text": eng.ctx_text_files(eng.TR / sid), "conv": eng.conv_status(sid),
+                "subject": eng.subject_of(meta), "title": meta.get("title", ""),
+                "title_auto": bool(meta.get("title_auto")),
+                "summary": summary, "summary_at": meta.get("summary_at", ""),
+                "outline": eng.parse_outline(summary)}, ensure_ascii=False).encode())
+        elif p == "/api/subjects":
+            # 과목 캡슐용: 과목 목록(최근순) + 이 세션 날짜의 주차·요일
+            q = dict(x.split("=", 1) for x in self.path.split("?", 1)[1].split("&")
+                     if "=" in x) if "?" in self.path else {}
+            sid = pathlib.Path(q.get("sid", "")).name
+            self._send(json.dumps(eng.subjects_info(sid or None), ensure_ascii=False).encode())
         elif p == "/api/config":
             self._send(json.dumps({**ENGINE.cfg, "lang_options": eng.MAJOR_LANGS},
                                   ensure_ascii=False).encode())
@@ -150,10 +178,21 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     meta = {"id": sid, "state": "done"}
                 meta["title"] = title
+                meta["title_auto"] = False        # 사용자가 직접 정한 제목은 추천이 덮지 않는다
                 mf.write_text(json.dumps(meta, ensure_ascii=False))
                 self._send(b'{"ok":true}')
             else:
                 self._send(b'{"ok":false}', code=400)
+        elif self.path == "/api/session/subject":
+            # 과목 지정: {id, subject, title?} → meta.subject(+추천 제목), 자료 폴더 복사
+            sid = pathlib.Path(str(body.get("id", ""))).name
+            subject = " ".join(str(body.get("subject", "")).split())[:40]
+            title = str(body.get("title", "")).strip()[:60] or None
+            if not sid or not subject or not (eng.TR / sid).is_dir():
+                self._send(b'{"ok":false,"error":"session"}', code=400); return
+            meta, copied = set_subject(sid, subject, title)
+            self._send(json.dumps({"ok": True, "subject": subject, "title": meta.get("title", ""),
+                                   "copied": copied}, ensure_ascii=False).encode())
         elif self.path == "/api/session/context":
             sid = pathlib.Path(str(body.get("id", ""))).name
             m = eng.TR / sid / "meta.json"
@@ -186,14 +225,27 @@ class Handler(BaseHTTPRequestHandler):
                 if used + len(data) > eng.CTX_FILES_MAX_MB * 1024 * 1024:
                     skipped.append(name); continue
                 (cd / name).write_bytes(data); used += len(data); saved.append(name)
+            meta = read_meta(sid)
+            guess, copied = "", []
+            if saved and not eng.subject_of(meta):      # 과목이 아직 없으면 자료 이름으로 추정
+                guess = next((g for g in (eng.guess_subject(n, sid) for n in saved) if g), "")
+                if guess:
+                    meta, copied = set_subject(sid, guess)
+            elif saved:
+                copied = eng.file_materials(d, meta, saved)
+            if saved:   # 텍스트 변환은 오래 걸리니 백그라운드 — 다듬기·요약이 기다렸다 쓴다
+                threading.Thread(target=eng.convert_ctx, args=(d,), daemon=True).start()
             self._send(json.dumps({"ok": True, "saved": saved, "skipped": skipped,
-                                   "files": ctx_files(sid)}, ensure_ascii=False).encode())
+                                   "files": ctx_files(sid), "guess": guess,
+                                   "subject": eng.subject_of(meta), "title": meta.get("title", ""),
+                                   "copied": copied}, ensure_ascii=False).encode())
         elif self.path == "/api/session/ctx_clear":
             import shutil
             sid = pathlib.Path(str(body.get("id", ""))).name
             cd = eng.TR / sid / "ctx"
             if sid and cd.is_dir():
                 shutil.rmtree(cd, ignore_errors=True)
+                shutil.rmtree(eng.TR / sid / eng.CTX_TEXT_DIR, ignore_errors=True)
             self._send(b'{"ok":true}')
         elif self.path == "/api/session/digest":
             # 자료(ctx/ 파일 + 메모) → Gemini 영어 맥락. 동기 처리(수십 초) — 스레드 서버라 다른 요청은 안 막힘
@@ -220,6 +272,24 @@ class Handler(BaseHTTPRequestHandler):
             sid = pathlib.Path(str(body.get("id", ""))).name
             ok, err = ENGINE.start_polish(sid)
             self._send(json.dumps({"ok": ok, "error": err}, ensure_ascii=False).encode())
+        elif self.path == "/api/session/summary":
+            sid = pathlib.Path(str(body.get("id", ""))).name
+            ok, err = ENGINE.start_summary(sid)
+            self._send(json.dumps({"ok": ok, "error": err}, ensure_ascii=False).encode())
+        elif self.path == "/api/pick_folder":
+            # 자료 폴더 선택 — macOS 폴더 선택창(osascript). 취소하면 path 빈 문자열
+            import subprocess
+            try:
+                r = subprocess.run(
+                    ["osascript", "-e", "activate",
+                     "-e", 'POSIX path of (choose folder with prompt "강의자료를 정리할 폴더를 고르세요")'],
+                    capture_output=True, text=True, timeout=180)
+                path = r.stdout.strip().rstrip("/") if r.returncode == 0 else ""
+            except Exception:
+                path = ""
+            if path:
+                ENGINE.set_cfg("mat_dir", path)
+            self._send(json.dumps({"ok": bool(path), "path": path}, ensure_ascii=False).encode())
         elif self.path == "/api/session/lines":
             # 라인 편집: {id, action:"delete"|"edit", ids:[i...], text?, ko?}
             sid = pathlib.Path(str(body.get("id", ""))).name
@@ -296,7 +366,7 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=_restart, daemon=True).start()
         elif self.path == "/api/config":
             for k in ("translate", "theme", "layout", "ko_width", "ko_font", "line_h",
-                      "agy_account", "live", "langs"):
+                      "agy_account", "live", "langs", "mat_dir"):
                 if k in body:
                     ENGINE.set_cfg(k, body[k])
             self._send(b'{"ok":true}')
