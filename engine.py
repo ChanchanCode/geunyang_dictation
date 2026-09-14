@@ -10,7 +10,7 @@
 
 워커 모드: `python engine.py --worker` (stdin: 헤더 JSON 줄 + float32 raw, stdout: 결과 JSON 줄)
 """
-import asyncio, datetime, json, logging, os, pathlib, queue, re, shutil, struct, subprocess, sys, threading, time
+import asyncio, datetime, json, logging, os, pathlib, queue, re, shutil, socket, struct, subprocess, sys, threading, time
 import numpy as np
 
 logging.basicConfig(level=logging.ERROR)
@@ -27,9 +27,16 @@ SR = 16000
 FFMPEG = shutil.which("ffmpeg") or next(
     (p for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
      if pathlib.Path(p).exists()), "ffmpeg")
+FFPROBE = shutil.which("ffprobe") or str(pathlib.Path(FFMPEG).with_name("ffprobe"))
+AUTOSAVE_SEC = 20        # 녹음 중 lines.json 스냅샷 주기 — 크래시가 나도 이만큼만 잃는다
+MEDIA_EXT = {".m4a", ".mp3", ".wav", ".aac", ".flac", ".ogg", ".opus", ".webm", ".mp4",
+             ".mov", ".mkv", ".m4v", ".caf", ".aiff", ".aif", ".wma"}
 AGY_MODEL = "gemini-3.8-flash-low"          # 실시간 번역 — 짧은 배치, 속도·쿼터 우선
 AGY_MODEL_HEAVY = "gemini-3.8-flash-medium" # 다듬기·요약·자료 변환 — 긴 문맥, 정확도 우선
 AGY_TURNS_MAX = 12
+AGY_RETRY_WAIT = (10, 30, 60)  # 다듬기·요약: 인터넷은 되는데 답이 없을 때 다시 시도 간격(초)
+NET_WAIT_MAX = 1800     # 인터넷이 끊기면 이만큼(초) 기다렸다 이어서 한다. 넘으면 멈추고 '다시 시도'
+JOB_RESUME_MAX = 2      # 앱이 꺼져 끊긴 다듬기·요약을 다음 실행 때 자동으로 이어 하는 최대 횟수
 CTX_MAX = 1200           # 세션 맥락(meta.context) 최대 길이
 CTX_FILE_EXT = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".txt", ".md"}
 CTX_FILES_MAX_MB = 60
@@ -148,9 +155,10 @@ class FixWorker:
                 return None
 
     def stop(self):
-        if self.proc is not None and self.proc.poll() is None:
-            self.proc.terminate()
-        self.proc = None
+        with self.lock:   # 전사 중인 호출(복구 스레드 등)이 끝난 뒤에 내린다
+            if self.proc is not None and self.proc.poll() is None:
+                self.proc.terminate()
+            self.proc = None
 
 
 # ---------- agy 사이드카 (galpi PLAN-AI 실측 프로토콜) ----------
@@ -231,6 +239,24 @@ def agy_accounts():
     return out
 
 
+_net = {"t": 0.0, "ok": True, "seen": False}
+
+def online():
+    """인터넷 연결 여부 (구글 443 접속, 5초 캐시). 이 프로세스에서 한 번도 접속된 적이 없으면
+    확인 방법 자체가 막힌 환경일 수 있으니 판단하지 않고 True — 기다리기·중단을 걸지 않는다."""
+    if time.time() - _net["t"] >= 5:
+        try:
+            socket.create_connection(("www.google.com", 443), timeout=3).close()
+            _net.update(ok=True, seen=True)
+        except OSError:
+            _net["ok"] = False
+        _net["t"] = time.time()
+    return _net["ok"] or not _net["seen"]
+
+def offline():
+    return not online()
+
+
 class Agy:
     """agy 사이드카. agent=None 이면 기본 에이전트(요약·자료 변환처럼 자유 형식 답이 필요할 때).
     add_dir 를 주면 그 폴더의 파일을 Gemini 가 view_file 로 직접 읽는다(PDF·이미지)."""
@@ -283,8 +309,9 @@ class Agy:
                 break
         self.stop(); return False
 
-    def turn(self, prompt, timeout=180, preamble=""):
-        """preamble 은 프로세스가 새로 뜬 첫 턴에만 앞에 붙는다(긴 참고자료를 매 턴 다시 보내지 않게)."""
+    def turn(self, prompt, timeout=180, preamble="", abort=None):
+        """preamble 은 프로세스가 새로 뜬 첫 턴에만 앞에 붙는다(긴 참고자료를 매 턴 다시 보내지 않게).
+        abort() 가 15초 간격으로 세 번 연속 참이면(인터넷 끊김 등) timeout 까지 기다리지 않고 포기한다."""
         if self.proc is None or self.proc.poll() is not None or self.turns >= AGY_TURNS_MAX:
             self.stop()
             if not self.start():
@@ -298,11 +325,16 @@ class Agy:
             self.proc.stdin.flush()
         except (BrokenPipeError, OSError):
             self.stop(); return None
-        text, deadline = "", time.time() + timeout
+        text, deadline, bad = "", time.time() + timeout, 0
         while True:
+            left = deadline - time.time()
             try:
-                ev, body = self.q.get(timeout=max(0.1, deadline - time.time()))
+                ev, body = self.q.get(timeout=max(0.1, min(left, 15) if abort else left))
             except queue.Empty:
+                if abort and time.time() < deadline:
+                    bad = bad + 1 if abort() else 0
+                    if bad < 3:
+                        continue
                 self.stop(); return None
             if ev == "step_update" and body.get("step_type") == "agent_response" \
                     and body.get("text_delta"):
@@ -415,6 +447,9 @@ _conv_lock = threading.Lock()
 
 def conv_status(sid):
     return dict(_conv.get(sid) or {})
+
+def conv_busy():
+    return any(v.get("busy") for v in list(_conv.values()))
 
 def ctx_text_files(sess):
     d = sess / CTX_TEXT_DIR
@@ -638,6 +673,162 @@ def file_materials(sess, meta, names=None):
     return done
 
 
+# ---------- 과목 용어집 (지난 세션의 맥락 Terms 줄 + 요약의 핵심 용어) ----------
+
+def _summary_terms(md):
+    """summary.md '## 핵심 용어' 의 '- **term (한국어)** — 설명' → ['term', ...]."""
+    out, on = [], False
+    for line in (md or "").splitlines():
+        s = line.strip()
+        if s.startswith("## "):
+            on = "용어" in s
+            continue
+        m = on and re.match(r"^[-*]\s+\*\*(.+?)\*\*", s)
+        if m:
+            t = re.sub(r"\s*\([^)]*[가-힣][^)]*\)\s*", " ", m.group(1)).strip()
+            if t:
+                out.append(t)
+    return out
+
+def subject_terms(subject, exclude_sid=None, limit=80):
+    """같은 과목 지난 세션들에서 모은 용어. 여러 강의에 반복된 용어가 앞, 같으면 최근 것이 앞."""
+    key = _norm(subject)
+    if not key:
+        return []
+    count, order, name = {}, [], {}
+    for m in list_sessions():                 # 최신순
+        if m.get("id") == exclude_sid or _norm(subject_of(m)) != key:
+            continue
+        src = []
+        mm = re.search(r"^Terms:\s*(.+)$", m.get("context") or "", re.M | re.I)
+        if mm:
+            src += mm.group(1).split(",")
+        sf = TR / m["id"] / "summary.md"
+        if sf.exists():
+            try:
+                src += _summary_terms(sf.read_text())
+            except OSError:
+                pass
+        seen = set()
+        for t in src:
+            t = t.strip().strip(".;:")
+            k = t.lower()
+            if not (2 <= len(t) <= 60) or k in seen:
+                continue
+            seen.add(k)
+            if k not in count:
+                count[k] = 0; order.append(k); name[k] = t
+            count[k] += 1
+    ranked = sorted(order, key=lambda k: (-count[k], order.index(k)))
+    return [name[k] for k in ranked[:limit]]
+
+def subject_terms_text(meta, sid, budget):
+    terms = subject_terms(subject_of(meta), sid)
+    s = ""
+    for t in terms:
+        if len(s) + len(t) + 2 > budget:
+            break
+        s += (", " if s else "") + t
+    return s
+
+
+# ---------- 본문 검색 ----------
+
+_search_cache = {}   # path -> (mtime, data)
+
+def _cached(path, loader):
+    try:
+        mt = path.stat().st_mtime
+    except OSError:
+        return None
+    c = _search_cache.get(str(path))
+    if c and c[0] == mt:
+        return c[1]
+    try:
+        data = loader(path)
+    except Exception:
+        data = None
+    _search_cache[str(path)] = (mt, data)
+    return data
+
+def _snip(text, toks, width=46):
+    low = text.lower()
+    at = min((low.find(t) for t in toks if low.find(t) >= 0), default=0)
+    a, b = max(0, at - width), min(len(text), at + width + 40)
+    return ("…" if a else "") + text[a:b].strip() + ("…" if b < len(text) else "")
+
+def search_sessions(q, per=6, max_sessions=40):
+    """제목·전사(원문·번역)·요약에서 찾는다. 공백으로 나눈 낱말이 모두 들어간 줄만."""
+    toks = [t for t in (q or "").lower().split() if t]
+    if not toks:
+        return []
+    hit = lambda s: all(t in s.lower() for t in toks)
+    out = []
+    for m in list_sessions():
+        sid = m.get("id")
+        if not sid:
+            continue
+        sess = TR / sid
+        hits, n = [], 0
+        lines = _cached(sess / "lines.json", lambda p: json.loads(p.read_text())) or []
+        for k, l in enumerate(lines):
+            for f in ("text", "ko"):
+                v = l.get(f) or ""
+                if v and hit(v):
+                    n += 1
+                    if len(hits) < per:
+                        hits.append({"i": l.get("i", k), "t": l.get("t", ""), "f": f, "s": _snip(v, toks)})
+                    break
+        md = _cached(sess / "summary.md", lambda p: p.read_text()) or ""
+        sec = -1
+        for line in md.splitlines():
+            if line.startswith("## "):
+                sec += 1
+            s = re.sub(r"[*`#>]|^\s*[-•]\s*", "", line).strip()
+            if s and not s.startswith("[줄") and hit(s):
+                n += 1
+                if len(hits) < per:
+                    hits.append({"f": "sum", "k": sec, "s": _snip(s, toks)})
+        title = m.get("title") or ""
+        if n or hit(title + " " + sid):
+            out.append({"id": sid, "title": title, "subject": subject_of(m), "n": n, "hits": hits})
+            if len(out) >= max_sessions:
+                break
+    return out
+
+
+# ---------- 과목 정리본 (주차별 요약 → 한 과목 노트) ----------
+
+COURSE_DIR = TR / ".course"
+
+def course_key(subject):
+    return _norm(subject) or "_"
+
+def course_sessions(subject):
+    """같은 과목의 전사가 있는 세션, 오래된 순."""
+    key = course_key(subject)
+    return [m for m in reversed(list_sessions())
+            if _norm(subject_of(m)) == key and (TR / m["id"] / "lines.json").exists()]
+
+def course_info(subject):
+    key = course_key(subject)
+    md_p, meta_p = COURSE_DIR / f"{key}.md", COURSE_DIR / f"{key}.json"
+    sess = course_sessions(subject)
+    rows = [{"id": m["id"], "title": m.get("title") or m["id"],
+             "summary": (TR / m["id"] / "summary.md").exists(),
+             "summary_at": m.get("summary_at", "")} for m in sess]
+    try:
+        meta = json.loads(meta_p.read_text())
+    except Exception:
+        meta = {}
+    md = md_p.read_text() if md_p.exists() else ""
+    used = meta.get("used") or {}
+    stale = bool(md) and any(r["id"] not in used or (r["summary"] and used[r["id"]] != r["summary_at"])
+                             for r in rows)
+    return {"subject": subject, "md": md, "at": meta.get("at", ""), "sessions": rows,
+            "stale": stale, "outline": parse_outline(md)}
+
+
 POLISH_HEAD = """다음은 대학원 강의를 자동 받아쓰기(ASR)한 결과의 일부다. 줄마다 원문을 교정한다.
 
 원문 교정 (영어, 가끔 한국어 섞임) — 번역문만큼 원문도 매끄럽게 읽히도록 정리한다:
@@ -662,9 +853,11 @@ POLISH_EN = """
 N. <교정한 원문>
 """
 
-def polish_preamble(ctx, slides):
-    """새 사이드카 프로세스의 첫 턴에만 붙는 참고자료(맥락 노트 + 강의자료 본문)."""
+def polish_preamble(ctx, slides, terms=""):
+    """새 사이드카 프로세스의 첫 턴에만 붙는 참고자료(맥락 노트 + 과목 용어 + 강의자료 본문)."""
     s = f"수업 맥락: {ctx}\n\n" if ctx else ""
+    if terms:
+        s += f"이 과목 지난 강의에서 쓰인 용어 (소리가 비슷하게 잘못 들린 단어는 이 표기로): {terms}\n\n"
     if slides:
         s += ("강의자료 본문 (참고용 — 용어·표기·수식은 이걸 따른다. 자료에만 있고 화자가 말하지 않은 "
               "내용을 끌어오지는 마라):\n" + slides + "\n\n")
@@ -707,6 +900,34 @@ SUMMARY_PROMPT = """너는 대학원 강의 노트를 만드는 조교다. 아�
 규칙: 번호 섹션 제목 바로 다음 줄의 대괄호 표시는 반드시 쓴다. 줄 번호는 아래 전사의 [번호]를 그대로 쓴다.
 슬라이드 대응이 없으면 "[줄 12–34]" 처럼 슬라이드 부분을 뺀다.
 """
+
+COURSE_PROMPT = """너는 대학원 강의 노트를 만드는 조교다. 아래는 한 과목의 강의별 요약이다(오래된 순).
+이것만 근거로 한국어 '과목 정리본'을 Markdown 으로 쓴다.
+
+원칙:
+- 담백하게. 미사여구·감상 없이 내용만. 대학원 수준 독자라 기초 개념 설명은 생략한다.
+- 전문용어는 영어 그대로, 필요하면 괄호로 한국어. 수식은 $...$ (LaTeX).
+- 요약에 없는 내용은 넣지 않는다. 강의끼리 이어지는 개념은 한곳에 묶고, 여러 번 강조된 점은 놓치지 마라.
+
+출력 형식 — 정확히 이 구조로. 다른 말은 쓰지 마라:
+
+# <과목명> 정리본
+
+## 강의 흐름
+- **<강의 제목>** — 한 줄 요지   (강의마다 한 줄, 순서대로)
+
+## 1. <주제>
+- 여러 강의에 걸친 내용을 주제별로 정리: 정의·주장·모형·수식·직관·예시·교수 강조점
+- 불릿 끝에 출처 강의를 (강의 제목) 으로
+(주제 4~10개, 강의 순서를 대체로 따른다)
+
+## 핵심 용어
+- **term** — 한 줄 설명
+
+## 공지·과제·시험
+- (있을 때만, 출처 강의 표시. 없으면 섹션 생략)
+"""
+
 
 def parse_outline(md):
     """summary.md → [{title, start, end, pages}]. start 는 전사 라인의 i (없으면 None)."""
@@ -756,11 +977,12 @@ def hangul_dominant(text):
     return h > a
 
 
-def whisper_prompt(ctx, limit=260):
+def whisper_prompt(ctx, limit=260, extra=""):
     """맥락 텍스트 → Whisper initial_prompt. 긴 한국어 프롬프트(슬라이드 요약 등)는
-    디코더를 망가뜨려 빈 결과·환각만 낸다(실측). 영문 용어만 추려 200자 이내로."""
+    디코더를 망가뜨려 빈 결과·환각만 낸다(실측). 영문 용어만 추려 200자 이내로.
+    extra(과목 누적 용어)는 세션 용어 뒤 남는 자리만 채운다."""
     m = re.search(r"^Terms:\s*(.+)$", ctx or "", re.M | re.I)  # Gemini 정리 노트면 용어 줄만
-    src = m.group(1) if m else (ctx or "")
+    src = (m.group(1) if m else (ctx or "")) + ", " + (extra or "")
     out, seen = [], set()
     for m in re.finditer(r"[A-Za-z][A-Za-z0-9\-]*(?:[ /][A-Za-z][A-Za-z0-9\-]*)*", src):
         t = m.group(0).strip()
@@ -797,7 +1019,7 @@ def live_cut(text, last_line, lo=0):
 DEFAULT_CFG = {"translate": "live", "theme": "auto", "layout": "inline",
                "ko_width": 360, "ko_font": 14, "line_h": 1.65, "toc_w": 200,
                "agy_account": "main", "port": 8765, "live": "on",
-               "langs": list(DEFAULT_LANGS)}
+               "langs": list(DEFAULT_LANGS), "input": ""}
 ACCT_STORE = pathlib.Path.home() / ".claude/.state/gemini-accounts"
 CFG_ALLOWED = {"translate": ("live", "after", "off"),
                "theme": ("auto", "light", "dark", "term", "term-light"),
@@ -916,7 +1138,17 @@ class Engine:
         self._edited = False     # 사용자가 라인을 지우거나 고쳤나 (전부 지운 세션 저장 판단용)
         self.polish = {"sid": None, "busy": False, "note": "", "error": ""}
         self.summary = {"sid": None, "busy": False, "note": "", "error": ""}
+        self.course = {"subject": "", "busy": False, "note": "", "error": ""}
         self._flush_translate = threading.Event()
+        self._src = None         # 파일 가져오기 중이면 그 경로 (마이크 대신)
+        self._src_tmp = False    # 업로드로 받은 임시 파일이면 끝난 뒤 지운다
+        self._imp = None         # {"name","dur","done"} 가져오기 진행
+        self._part = 0           # 이번 녹음이 쓰는 오디오 파트 번호
+        self._saved_at = 0.0
+        self.recover = ""        # 복구 중인 세션 id
+        self._rec_lock = threading.Lock()
+        self._live_sids = set()  # 이 프로세스에서 녹음을 시작한 세션
+        threading.Thread(target=self._recover_all, daemon=True).start()
 
     # -- 스레드/루프 유틸
     def _run_loop(self):
@@ -931,13 +1163,17 @@ class Engine:
             self.rev += 1
 
     # -- 컨트롤 (외부 스레드에서 호출)
-    def start(self, sid=None):
+    def start(self, sid=None, src=None, tmp=False):
         if self.state != "idle":
-            return
+            return False
+        self._src, self._src_tmp = (str(src) if src else None), bool(src and tmp)
         self.state = "starting"; self.bump()
         self._call(self._session(sid))
+        return True
 
     def pause(self):
+        if self._src:        # 파일 가져오기는 일시정지가 없다 (다시 열면 처음부터 읽는다)
+            return
         if self.state == "recording" and self._pause_evt:
             self.loop.call_soon_threadsafe(self._pause_evt.set)
 
@@ -965,6 +1201,9 @@ class Engine:
             sid = start_wall.strftime("%Y-%m-%d_%H%M")
         sess = TR / sid
         sess.mkdir(parents=True, exist_ok=True)
+        if self._needs_recover(sess):   # 지난번 크래시로 남은 녹음이 있으면 먼저 살린다
+            await asyncio.get_event_loop().run_in_executor(None, self._recover, sess)
+        self._live_sids.add(sid)
         prev = []
         lf = sess / "lines.json"
         if lf.exists():  # 이어하기 — 기존 라인·번역 로드
@@ -998,20 +1237,37 @@ class Engine:
         except Exception:
             pass
         meta["state"] = "recording"
+        src = self._src
+        if src:
+            meta["source"] = pathlib.Path(src).name
+            if not meta.get("title"):
+                meta["title"] = pathlib.Path(src).stem[:60]; meta["title_auto"] = False
         meta_p.write_text(json.dumps(meta, ensure_ascii=False))
         self._ctx = (meta.get("context") or "").strip()[:CTX_MAX]
-        self._wprompt = whisper_prompt(self._ctx)  # Whisper 에는 영문 용어만 (한국어 장문은 금지)
+        terms = subject_terms_text(meta, sid, 900)   # 같은 과목 지난 강의 용어
+        # Whisper 에는 영문 용어만 (한국어 장문은 금지). 세션 용어가 먼저, 남는 자리를 과목 용어로
+        self._wprompt = whisper_prompt(self._ctx, extra=terms)
+        if terms:
+            self._ctx = (self._ctx + "\nCourse terms: " + terms[:400]).strip()
+        self._part = next_part(sess)
+        self._saved_at = time.time()
+        self._imp = None
+        if src:
+            self._imp = {"name": pathlib.Path(src).name, "dur": 0.0, "done": 0.0}
+            dur = await asyncio.get_event_loop().run_in_executor(None, probe_duration, src)
+            self._imp["dur"] = round(dur, 1)
 
         # 워커·라이브 엔진 로드 (첫 실행은 모델 다운로드로 오래 걸림)
         ok = await asyncio.get_event_loop().run_in_executor(None, lambda: self.fix.proc or self.fix.start())
         if not ok:
             with self.lock:
                 self.state = "idle"; self.error = "확정 전사 워커 시작 실패"
+                self._src = None; self._src_tmp = False; self._imp = None
             self.bump(); return
         liveq = queue.Queue()
         live_stop = threading.Event()
         self._liveq, self._live_stop = liveq, live_stop
-        if self.cfg.get("live") != "off":   # off 면 parakeet 로드·급전 전부 생략
+        if self.cfg.get("live") != "off" and not src:   # off·파일 가져오기면 parakeet 로드·급전 전부 생략
             threading.Thread(target=self._live_loop, args=(liveq, live_stop),
                              daemon=True).start()
         else:
@@ -1022,16 +1278,26 @@ class Engine:
         self._abort = False
         pcm_path = sess / "audio.pcm"
         pcm_f = open(pcm_path, "ab")
+        part = self._part
 
         def on_utt(audio, at, dur):
-            wall = (datetime.datetime.now()
-                    - datetime.timedelta(seconds=max(0.0, seg.pos - at))).strftime("%H:%M:%S")
-            self.fixq.put((sid, sess, audio, at, dur, wall, self._wprompt))
+            if src:   # 파일은 파일 안의 위치를 시각으로
+                wall = hms(at)
+            else:
+                wall = (datetime.datetime.now()
+                        - datetime.timedelta(seconds=max(0.0, seg.pos - at))).strftime("%H:%M:%S")
+            self.fixq.put((sid, sess, audio, at, dur, wall, self._wprompt, part))
         seg = Segmenter(on_utt)
 
         with self.lock:
             self.state = "recording"
         self.bump()
+        try:   # 녹음·가져오기 동안 잠자기 방지 (앱이 죽으면 같이 풀린다)
+            caff = subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            caff = None
+        eof = False
 
         try:
             while not stop.is_set():
@@ -1040,19 +1306,27 @@ class Engine:
                         self.state = "paused"
                     self.bump()
                     seg.flush()
+                    self._autosave(sess, force=True)
                     while pause.is_set() and not stop.is_set():
                         await asyncio.sleep(0.2)
                     continue
-                import os
-                src = (["-re", "-i", os.environ["GY_INPUT"]]
-                       if os.environ.get("GY_INPUT") else ["-f", "avfoundation", "-i", ":0"])
+                if src:
+                    inp = ["-i", src, "-vn"]
+                elif os.environ.get("GY_INPUT"):
+                    inp = ["-re", "-i", os.environ["GY_INPUT"]]
+                else:
+                    arg = await asyncio.get_event_loop().run_in_executor(
+                        None, input_arg, self.cfg.get("input", ""))
+                    inp = ["-f", "avfoundation", "-i", arg]
                 proc = await asyncio.create_subprocess_exec(
-                    FFMPEG, "-hide_banner", "-loglevel", "error", *src,
+                    FFMPEG, "-hide_banner", "-loglevel", "error", *inp,
                     "-ac", "1", "-ar", str(SR), "-f", "s16le", "pipe:1",
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                     stdin=asyncio.subprocess.DEVNULL)
                 try:
                     while not stop.is_set() and not pause.is_set():
+                        if src and self.fixq.qsize() > 6:   # 전사가 따라올 때까지 읽기를 멈춘다 (메모리)
+                            await asyncio.sleep(0.2); continue
                         try:
                             chunk = await asyncio.wait_for(proc.stdout.read(SR // 5 * 2), timeout=2)
                         except asyncio.TimeoutError:
@@ -1060,6 +1334,8 @@ class Engine:
                                 raise IOError("ffmpeg 종료(마이크 권한?)")
                             continue
                         if not chunk:
+                            if src:
+                                eof = True; stop.set(); break
                             raise IOError("ffmpeg 종료(마이크 권한?)")
                         pcm_f.write(chunk)
                         chunk_f = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
@@ -1085,12 +1361,12 @@ class Engine:
             pcm_f.close()
             live_stop.set()
             self._liveq = None
+            if caff:
+                caff.terminate()
+            if src and not eof and not self._abort:
+                self._drop_fixq()   # 가져오기 중단 — 이미 받아쓴 데까지만 남긴다
             if self._abort:
-                try:  # 확정 대기열 폐기 — 교정·저장 전부 생략
-                    while True:
-                        self.fixq.get_nowait(); self.fixq.task_done()
-                except queue.Empty:
-                    pass
+                self._drop_fixq()   # 확정 대기열 폐기 — 교정·저장 전부 생략
                 with self.lock:
                     self.sid = None; self.lines = []
             else:
@@ -1100,8 +1376,15 @@ class Engine:
                     logging.exception("finalize 실패")
                     with self.lock:
                         self.error = f"저장 실패: {ex}"[:120]
+            if src and self._src_tmp:   # 업로드 사본 — 오디오는 m4a 로 남았다
+                try:
+                    pathlib.Path(src).unlink()
+                    pathlib.Path(src).parent.rmdir()
+                except OSError:
+                    pass
             with self.lock:
                 self.state = "idle"; self.live = []; self.live_buffer = ""; self._live_text = ""
+                self._src = None; self._src_tmp = False; self._imp = None
             self.bump()
 
     # -- 라이브 미리보기 (parakeet-mlx 스트리밍, 스레드) — 확정 층과 독립
@@ -1143,16 +1426,40 @@ class Engine:
         except Exception:
             logging.exception("라이브 스트림 종료")
 
+    def _drop_fixq(self):
+        try:
+            while True:
+                self.fixq.get_nowait(); self.fixq.task_done()
+        except queue.Empty:
+            pass
+
     # -- 확정 전사 소비자 (스레드)
     def _fix_worker(self):
         while True:
-            sid, sess, audio, at, dur, wall, ctx = self.fixq.get()
+            sid, sess, audio, at, dur, wall, ctx, part = self.fixq.get()
             try:
-                self._fix_one(sid, sess, audio, at, dur, wall, ctx)
+                self._fix_one(sid, sess, audio, at, dur, wall, ctx, part)
             finally:
+                imp = self._imp
+                if imp is not None and sid == self.sid:
+                    imp["done"] = round(at + dur, 1)
                 self.fixq.task_done()
 
-    def _fix_one(self, sid, sess, audio, at, dur, wall, ctx):
+    def _autosave(self, sess, force=False):
+        """녹음 중 lines.json 스냅샷 (원자적 쓰기). 크래시 복구의 기준점이 된다."""
+        if self.state not in ("recording", "paused") or self.sid != sess.name:
+            return
+        if not force and time.time() - self._saved_at < AUTOSAVE_SEC:
+            return
+        self._saved_at = time.time()
+        with self.lock:
+            snap = [dict(l) for l in self.lines]
+        try:
+            write_json_atomic(sess / "lines.json", snap)
+        except OSError:
+            pass
+
+    def _fix_one(self, sid, sess, audio, at, dur, wall, ctx, part=0):
             r = self.fix.transcribe(audio, ctx, self.cfg.get("langs") or DEFAULT_LANGS)
             if r is None:
                 with self.lock:
@@ -1161,7 +1468,7 @@ class Engine:
             if not r.get("text"):
                 return
             text = r["text"]
-            line = {"t": wall, "a": round(at, 2), "text": text,
+            line = {"t": wall, "a": round(at, 2), "d": round(dur, 2), "p": part, "text": text,
                     "lang": r.get("lang", "en"),
                     "ko": "" if hangul_dominant(text) else None, "at": time.time()}
             with self.lock:
@@ -1179,6 +1486,7 @@ class Engine:
                         f.write(f"**{wall}** {text}\n\n")
                 except OSError:
                     pass
+                self._autosave(sess)
 
     # -- 번역 (스레드): 실시간 배치
     def _translator(self):
@@ -1214,14 +1522,17 @@ class Engine:
                     if l["ko"] is None:
                         l["ko"] = got.get(k + 1, "")
                 self.trans_note = ""; self.rev += 1
+                sid = self.sid
+            if sid:
+                self._autosave(TR / sid)
 
     # -- 종료 처리: 번역 마무리/교정 → 저장 → 오디오 압축
     def _finalize(self, sid, sess, start_wall):
         if not sess.exists():  # 마무리 중 세션이 삭제된 경우 (UI 삭제 등)
             return
         # 확정 큐 소진 대기 — 처리 중인 마지막 발화까지 (empty() 는 꺼낸 즉시 참이 되어 유실됨)
-        t0 = time.time()
-        while self.fixq.unfinished_tasks and time.time() - t0 < 120:
+        t0 = time.time()   # 파일 가져오기는 남은 전사를 끝까지 기다린다
+        while self.fixq.unfinished_tasks and (self._src or time.time() - t0 < 120):
             time.sleep(0.5)
         # 종료는 빨라야 한다 — 전체 문맥 다듬기(agy)는 여기서 하지 않고
         # 뷰어의 '다듬기' 버튼(polish)으로 따로 돌린다.
@@ -1238,44 +1549,36 @@ class Engine:
                 if l["ko"]:
                     f.write(f"> {l['ko']}\n")
                 f.write("\n")
-        (sess / "lines.json").write_text(json.dumps(lines, ensure_ascii=False))
+        write_json_atomic(sess / "lines.json", lines)
         ended = datetime.datetime.now()
-        # 오디오 압축 (pcm → m4a)
-        pcm = sess / "audio.pcm"
-        if pcm.exists():
-            parts = sorted(sess.glob("audio*.m4a"))
-            out = sess / ("audio.m4a" if not parts else f"audio-{len(parts)+1}.m4a")
-            r = subprocess.run([FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
-                                "-f", "s16le", "-ar", str(SR), "-ac", "1", "-i", str(pcm),
-                                "-c:a", "aac", "-b:a", "48k", str(out)])
-            if r.returncode == 0:
-                pcm.unlink()
+        pcm_to_m4a(sess)   # 오디오 압축 (pcm → 이번 파트 m4a)
         meta = {"id": sid, "started": start_wall.isoformat()}
-        try:  # 이름·최초 시작시각·맥락 보존
+        try:  # 이름·과목·최초 시작시각·맥락·요약 시각 등 기존 값 보존
             om = json.loads((sess / "meta.json").read_text())
-            for k in ("title", "started", "context", "context_src", "archived"):
-                if om.get(k):
-                    meta[k] = om[k]
+            meta.update({k: v for k, v in om.items() if v not in (None, "")})
         except Exception:
             pass
         meta.update({"ended": ended.isoformat(), "n_lines": len(lines), "state": "done",
                      "polished": False,   # 새 라인이 생겼으니 다듬기는 다시 필요
                      "preview": (lines[0]["text"][:80] if lines else "")})
-        (sess / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
+        write_json_atomic(sess / "meta.json", meta)
         self.fix.stop()  # 워커 메모리 반납 — 다음 세션 시작 때 다시 띄운다
 
     # -- 전체 문맥 다듬기 (원문 교정 + 번역). 종료 후 버튼으로 실행.
-    def start_polish(self, sid):
+    def start_polish(self, sid, tries=0):
+        """tries>0 은 앱이 꺼져 끊긴 작업을 다음 실행 때 자동으로 이어 하는 경우."""
         sess = TR / sid
         if not (sess / "lines.json").exists():
             return False, "다듬을 내용이 없어요"
         if self.state != "idle":
             return False, "녹음이 끝난 뒤에 다듬을 수 있어요"
-        if self.polish["busy"]:
-            return False, "이미 다듬는 중이에요"
+        if self.polish["busy"] or self.summary["busy"] or self.course["busy"]:
+            return False, "이미 작업 중이에요"
         if not Agy(str(ROOT / ".agywork")).available():
             return False, "agy(Antigravity CLI)가 없어 다듬기를 못 해요"
-        self.polish = {"sid": sid, "busy": True, "note": "준비 중…", "error": ""}
+        self.polish = {"sid": sid, "busy": True, "error": "",
+                       "note": "끊긴 다듬기를 이어서 하는 중…" if tries else "준비 중…"}
+        update_meta(sess, job="polish", job_tries=tries)   # 앱이 꺼져도 다음 실행 때 이어 하도록 표시
         self.bump()
         threading.Thread(target=self._polish_job, args=(sid, sess), daemon=True).start()
         return True, ""
@@ -1285,83 +1588,133 @@ class Engine:
             self.polish = {"sid": sid, "busy": True, "note": t, "error": ""}
             self.bump()
         try:
-            self._polish_core(sid, sess, note)
-            self.polish = {"sid": sid, "busy": False, "note": "다듬기 완료", "error": ""}
+            skipped = self._polish_core(sid, sess, note)
+            self.polish = {"sid": sid, "busy": False, "error": "",
+                           "note": "다듬기 완료" + (f" ({skipped}구간은 응답이 없어 원문 유지)" if skipped else "")}
         except Exception as e:
+            logging.exception("다듬기 실패")
             self.polish = {"sid": sid, "busy": False, "note": "", "error": f"다듬기 실패: {e}"[:140]}
+        update_meta(sess, job=None, job_tries=None)   # 실패는 자동으로 다시 하지 않는다 — 버튼으로 이어서
         self.bump()
 
     def _polish_core(self, sid, sess, note):
         """전체 문맥 다듬기 본체. 자료가 아직 텍스트로 안 바뀌었으면 먼저 변환해 참고한다.
-        완료 시 meta.polished=True. 실패는 예외로."""
+        청크마다 저장하고 진행(meta.polish_done/polish_n)을 남겨, 중단되면 다음에 거기서 이어 한다.
+        완료 시 meta.polished=True, 응답이 끝내 없어 원문으로 둔 청크 수를 돌려준다. 실패는 예외로."""
         lines = json.loads((sess / "lines.json").read_text())
         for k, l in enumerate(lines):
             l.setdefault("i", k)
         if not lines:
             raise ValueError("다듬을 라인이 없어요")
+        self._wait_online(note, "다듬기")   # 끊긴 채 자료 변환을 하면 품질 낮은 대체 변환이 굳는다
         if ctx_pending(sess):
             if conv_status(sid).get("busy"):
                 note("강의자료 변환을 기다리는 중…"); wait_conv(sid)
             else:
                 convert_ctx(sess, note)
         try:
-            ctx = json.loads((sess / "meta.json").read_text()).get("context", "")
+            meta = json.loads((sess / "meta.json").read_text())
         except Exception:
-            ctx = ""
+            meta = {}
+        ctx = meta.get("context", "")
         want_ko = self.cfg.get("translate") != "off"
         head = POLISH_HEAD + (POLISH_KO if want_ko else POLISH_EN)
-        pre = polish_preamble(ctx, ctx_text_all(sess, 24000))
+        pre = polish_preamble(ctx, ctx_text_all(sess, 24000), subject_terms_text(meta, sid, 1500))
         agy = Agy(str(ROOT / ".agywork"), model=AGY_MODEL_HEAVY, print_timeout="8m")
         (ROOT / ".agywork").mkdir(exist_ok=True)
-        STEP, fails = 25, 0
-        for i in range(0, len(lines), STEP):
-            chunk = lines[i:i + STEP]
-            note(f"다듬는 중… {i}/{len(lines)}줄")
-            out = agy.turn(head + "\n" + "\n".join(
-                f"{k+1}. {l['text']}" for k, l in enumerate(chunk)), timeout=420, preamble=pre)
-            got = parse_polish(out, want_ko)
-            if not got:
-                fails += 1
-                if fails >= 3:
-                    agy.stop()
-                    raise RuntimeError("Gemini 응답을 받지 못했어요 (agy 로그인 확인)")
-                continue
-            for k, l in enumerate(chunk):
-                g = got.get(k + 1)
-                if not g:
-                    continue
-                en, ko = g
-                o = l["text"]
-                # 길이가 크게 어긋나면 환각으로 보고 원문 유지 (간투사 제거로 조금 짧아지는 건 허용)
-                if en and 0.4 * len(o) <= len(en) <= 2 * len(o) + 20:
-                    if en != o and not l.get("text0"):
-                        l["text0"] = o          # 원본 보존 (되돌리기용)
-                    l["text"] = en
-                if ko and l.get("ko") != "":
-                    l["ko"] = ko
-            write_session(sess, lines)          # 청크마다 저장 — 중단돼도 진행분은 남는다
-        agy.stop()
-        mp = sess / "meta.json"
+        STEP, n = 25, len(lines)
+        # 끊긴 다듬기는 끝난 청크 다음부터. 그사이 라인 수가 바뀌었으면(이어 녹음·병합·삭제) 처음부터
+        done = meta.get("polish_done", 0) if meta.get("polish_n") == n else 0
+        done = n if done >= n else done - done % STEP
+        update_meta(sess, polish_done=done, polish_n=n)
+        skipped = good = 0
         try:
-            meta = json.loads(mp.read_text())
-        except Exception:
-            meta = {"id": sid}
-        meta["polished"] = True
-        mp.write_text(json.dumps(meta, ensure_ascii=False))
-        return lines
+            for i in range(done, n, STEP):
+                chunk = lines[i:i + STEP]
+                label = f"다듬는 중… {i}/{n}줄" + (" (이어서)" if done else "")
+                note(label)
+                out = self._ask(agy, head + "\n" + "\n".join(
+                    f"{k+1}. {l['text']}" for k, l in enumerate(chunk)),
+                    lambda o: bool(parse_polish(o, want_ko)), note, label, timeout=420, preamble=pre)
+                if out is None:
+                    # 연결은 되는데 이 청크만 답이 안 오면 원문으로 두고 넘어간다. 첫 청크부터 안 되면 로그인 문제로 본다
+                    if not good or skipped >= 2:
+                        raise RuntimeError("Gemini 응답을 받지 못했어요 (agy 로그인 확인)")
+                    skipped += 1
+                    logging.error("다듬기 청크 건너뜀: %s %d", sid, i)
+                    update_meta(sess, polish_done=min(i + STEP, n), polish_n=n)
+                    continue
+                good += 1
+                self._apply_polish(chunk, parse_polish(out, want_ko))
+                write_session(sess, lines)          # 청크마다 저장 — 중단돼도 진행분은 남는다
+                update_meta(sess, polish_done=min(i + STEP, n), polish_n=n)
+        finally:
+            agy.stop()
+        update_meta(sess, polished=True, polish_done=None, polish_n=None)
+        return skipped
+
+    @staticmethod
+    def _apply_polish(chunk, got):
+        for k, l in enumerate(chunk):
+            g = got.get(k + 1)
+            if not g:
+                continue
+            en, ko = g
+            o = l["text"]
+            # 길이가 크게 어긋나면 환각으로 보고 원문 유지 (간투사 제거로 조금 짧아지는 건 허용)
+            if en and 0.4 * len(o) <= len(en) <= 2 * len(o) + 20:
+                if en != o and not l.get("text0"):
+                    l["text0"] = o          # 원본 보존 (되돌리기용)
+                l["text"] = en
+            if ko and l.get("ko") != "":
+                l["ko"] = ko
+
+    def _wait_online(self, note, label):
+        """인터넷이 끊겼으면 돌아올 때까지 기다린다. NET_WAIT_MAX 를 넘으면 예외(진행분은 남아 있다)."""
+        if online():
+            return
+        note(f"{label} — 인터넷 연결이 끊겼어요. 연결되면 이어서 해요")
+        t0 = time.time()
+        while offline():
+            if time.time() - t0 > NET_WAIT_MAX:
+                raise RuntimeError(f"인터넷 연결이 {NET_WAIT_MAX // 60}분 넘게 끊겨 멈췄어요")
+            time.sleep(5)
+        note(label)
+
+    def _ask(self, agy, prompt, ok, note, label, timeout, preamble="", tries=len(AGY_RETRY_WAIT)):
+        """agy 한 턴을 ok(답) 이 참일 때까지 다시 묻는다. 인터넷이 끊기면 돌아올 때까지 기다리고
+        (재시도 횟수에 안 센다), 연결은 되는데 답이 계속 안 오면 tries 번 뒤 None."""
+        n = 0
+        while True:
+            out = agy.turn(prompt, timeout=timeout, preamble=preamble, abort=offline)
+            if ok(out):
+                return out
+            agy.stop()      # 실패한 대화를 이어 쓰지 않는다 — 새 프로세스로 (preamble 도 다시 붙는다)
+            if offline():
+                self._wait_online(note, label)
+                continue
+            n += 1
+            if n > tries:
+                return None
+            wait = AGY_RETRY_WAIT[min(n, len(AGY_RETRY_WAIT)) - 1]
+            note(f"{label} — 응답이 없어 {wait}초 뒤 다시 시도해요 ({n}/{tries})")
+            time.sleep(wait)
+            note(label)
 
     # -- 강의 요약·정리본 (자료 변환 → 필요하면 다듬기 → Gemini 한 턴). 종료 후 버튼으로 실행.
-    def start_summary(self, sid):
+    def start_summary(self, sid, tries=0):
         sess = TR / sid
         if not (sess / "lines.json").exists():
             return False, "요약할 내용이 없어요"
         if self.state != "idle":
             return False, "녹음이 끝난 뒤에 요약할 수 있어요"
-        if self.polish["busy"] or self.summary["busy"]:
+        if self.polish["busy"] or self.summary["busy"] or self.course["busy"]:
             return False, "이미 작업 중이에요"
         if not Agy(str(ROOT / ".agywork")).available():
             return False, "agy(Antigravity CLI)가 없어 요약을 못 해요"
-        self.summary = {"sid": sid, "busy": True, "note": "준비 중…", "error": ""}
+        self.summary = {"sid": sid, "busy": True, "error": "",
+                        "note": "끊긴 요약을 이어서 하는 중…" if tries else "준비 중…"}
+        update_meta(sess, job="summary", job_tries=tries)
         self.bump()
         threading.Thread(target=self._summary_job, args=(sid, sess), daemon=True).start()
         return True, ""
@@ -1371,43 +1724,120 @@ class Engine:
             self.summary = {"sid": sid, "busy": True, "note": t, "error": ""}
             self.bump()
         try:
-            if ctx_pending(sess):
-                if conv_status(sid).get("busy"):
-                    note("강의자료 변환을 기다리는 중…"); wait_conv(sid)
-                else:
-                    convert_ctx(sess, note)
-            mp = sess / "meta.json"
-            try:
-                meta = json.loads(mp.read_text())
-            except Exception:
-                meta = {"id": sid}
-            if not meta.get("polished"):
-                self._polish_core(sid, sess, note)
-                meta = json.loads(mp.read_text())
-            lines = json.loads((sess / "lines.json").read_text())
-            for k, l in enumerate(lines):
-                l.setdefault("i", k)
-            if not lines:
-                raise ValueError("요약할 라인이 없어요")
-            ctx = meta.get("context", "")
-            slides = ctx_text_all(sess, 40000)
-            prompt = SUMMARY_PROMPT + (f"\n수업 맥락: {ctx}\n" if ctx else "")
-            if slides:
-                prompt += "\n=== 강의자료 ===\n" + slides + "\n"
-            prompt += "\n=== 강의 전사 ===\n" + "\n".join(f"[{l['i']}] {l['text']}" for l in lines)
-            note("요약 만드는 중… (몇 분 걸려요)")
-            agy = Agy(str(ROOT / ".agywork"), model=AGY_MODEL_HEAVY, agent=None, print_timeout="12m")
-            out = _strip_fence(agy.turn(prompt, timeout=720))
-            agy.stop()
-            if not out or "## " not in out:
-                raise RuntimeError("Gemini 응답을 받지 못했어요 (agy 로그인 확인)")
-            (sess / "summary.md").write_text(out)
-            meta["summary_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-            mp.write_text(json.dumps(meta, ensure_ascii=False))
+            self._summary_core(sid, sess, note)
             self.summary = {"sid": sid, "busy": False, "note": "요약 완료", "error": ""}
         except Exception as e:
             logging.exception("요약 실패")
             self.summary = {"sid": sid, "busy": False, "note": "", "error": f"요약 실패: {e}"[:140]}
+        update_meta(sess, job=None, job_tries=None)
+        self.bump()
+
+    def _summary_core(self, sid, sess, note):
+        """자료 변환 → (필요하면) 다듬기 → 요약. 실패는 예외로."""
+        self._wait_online(note, "요약")
+        if ctx_pending(sess):
+            if conv_status(sid).get("busy"):
+                note("강의자료 변환을 기다리는 중…"); wait_conv(sid)
+            else:
+                convert_ctx(sess, note)
+        mp = sess / "meta.json"
+        try:
+            meta = json.loads(mp.read_text())
+        except Exception:
+            meta = {"id": sid}
+        if not meta.get("polished"):
+            self._polish_core(sid, sess, note)
+            meta = json.loads(mp.read_text())
+        lines = json.loads((sess / "lines.json").read_text())
+        for k, l in enumerate(lines):
+            l.setdefault("i", k)
+        if not lines:
+            raise ValueError("요약할 라인이 없어요")
+        ctx = meta.get("context", "")
+        slides = ctx_text_all(sess, 40000)
+        terms = subject_terms_text(meta, sid, 1500)
+        prompt = SUMMARY_PROMPT + (f"\n수업 맥락: {ctx}\n" if ctx else "")
+        if terms:
+            prompt += f"\n이 과목 지난 강의 용어 (표기 참고용): {terms}\n"
+        if slides:
+            prompt += "\n=== 강의자료 ===\n" + slides + "\n"
+        prompt += "\n=== 강의 전사 ===\n" + "\n".join(f"[{l['i']}] {l['text']}" for l in lines)
+        label = "요약 만드는 중… (몇 분 걸려요)"
+        note(label)
+        agy = Agy(str(ROOT / ".agywork"), model=AGY_MODEL_HEAVY, agent=None, print_timeout="12m")
+        try:
+            out = self._ask(agy, prompt, lambda o: "## " in _strip_fence(o), note, label,
+                            timeout=720, tries=2)
+        finally:
+            agy.stop()
+        if out is None:
+            raise RuntimeError("Gemini 응답을 받지 못했어요 (agy 로그인 확인)")
+        write_text_atomic(sess / "summary.md", _strip_fence(out))   # 쓰다 꺼져도 이전 요약이 깨지지 않게
+        # 다듬기 등이 그사이 쓴 값을 덮지 않게 다시 읽어서 반영
+        update_meta(sess, summary_at=datetime.datetime.now().isoformat(timespec="seconds"))
+
+    # -- 과목 정리본: 요약이 없는 강의는 먼저 요약하고, 강의별 요약을 모아 한 번에 정리
+    def start_course(self, subject):
+        subject = " ".join(str(subject or "").split())[:40]
+        if not subject:
+            return False, "과목이 없어요"
+        if self.polish["busy"] or self.summary["busy"] or self.course["busy"]:
+            return False, "이미 작업 중이에요"
+        if not course_sessions(subject):
+            return False, "전사가 있는 강의가 없어요"
+        if not Agy(str(ROOT / ".agywork")).available():
+            return False, "agy(Antigravity CLI)가 없어 정리본을 못 만들어요"
+        self.course = {"subject": subject, "busy": True, "note": "준비 중…", "error": ""}
+        self.bump()
+        threading.Thread(target=self._course_job, args=(subject,), daemon=True).start()
+        return True, ""
+
+    def _course_job(self, subject):
+        def note(t):
+            self.course = {"subject": subject, "busy": True, "note": t, "error": ""}
+            self.bump()
+        try:
+            sess_list = course_sessions(subject)
+            todo = [m for m in sess_list if not (TR / m["id"] / "summary.md").exists()]
+            for k, m in enumerate(todo):
+                if self.state != "idle" and self.sid == m["id"]:
+                    continue   # 녹음 중인 강의는 건너뛴다
+                tag = f"요약 {k + 1}/{len(todo)} · {m.get('title') or m['id']} — "
+                self._summary_core(m["id"], TR / m["id"], lambda t: note(tag + t))
+            parts, used = [], {}
+            for m in course_sessions(subject):
+                sf = TR / m["id"] / "summary.md"
+                if not sf.exists():
+                    continue
+                parts.append(f"=== {m.get('title') or m['id']} ({m['id'][:10]}) ===\n{sf.read_text().strip()}")
+                used[m["id"]] = m.get("summary_at", "")
+            if not parts:
+                raise ValueError("요약이 있는 강의가 없어요")
+            terms = ", ".join(subject_terms(subject)[:80])
+            prompt = COURSE_PROMPT + f"\n과목명: {subject}\n"
+            if terms:
+                prompt += f"누적 용어: {terms}\n"
+            prompt += "\n" + "\n\n".join(parts)
+            label = f"정리본 만드는 중… (강의 {len(parts)}개)"
+            note(label)
+            agy = Agy(str(ROOT / ".agywork"), model=AGY_MODEL_HEAVY, agent=None, print_timeout="12m")
+            try:
+                out = self._ask(agy, prompt, lambda o: "## " in _strip_fence(o), note, label,
+                                timeout=720, tries=2)
+            finally:
+                agy.stop()
+            if out is None:
+                raise RuntimeError("Gemini 응답을 받지 못했어요 (agy 로그인 확인)")
+            COURSE_DIR.mkdir(parents=True, exist_ok=True)
+            key = course_key(subject)
+            write_text_atomic(COURSE_DIR / f"{key}.md", _strip_fence(out))
+            write_json_atomic(COURSE_DIR / f"{key}.json", {
+                "subject": subject, "used": used,
+                "at": datetime.datetime.now().isoformat(timespec="seconds")})
+            self.course = {"subject": subject, "busy": False, "note": "", "error": ""}
+        except Exception as e:
+            logging.exception("정리본 실패")
+            self.course = {"subject": subject, "busy": False, "note": "", "error": f"정리본 실패: {e}"[:140]}
         self.bump()
 
     # -- 라인 편집 (HTTP용). 활성 세션은 메모리, 아니면 디스크.
@@ -1453,7 +1883,130 @@ class Engine:
                     "lines": self.lines,
                     "live": [{"s": s, "e": e, "text": t} for s, e, t in self.live],
                     "live_buffer": self._live_tail(), "fixed_end": self.fixed_end,
-                    "polish": dict(self.polish), "summary": dict(self.summary)}
+                    "polish": dict(self.polish), "summary": dict(self.summary),
+                    "course": dict(self.course), "recover": self.recover,
+                    "import": dict(self._imp) if self._imp else None}
+
+    # -- 크래시 복구: 녹음 도중 앱이 죽으면 audio.pcm 과 state=recording 이 남는다.
+    #    자동 저장된 lines.json 을 기준으로, 그 뒤 구간만 pcm 에서 다시 받아쓰고 m4a 로 굳힌다.
+    def _needs_recover(self, sess):
+        if (sess / "audio.pcm").exists():
+            return True
+        try:
+            return json.loads((sess / "meta.json").read_text()).get("state") in ("recording", "finishing")
+        except Exception:
+            return False
+
+    def _recover_all(self):
+        time.sleep(3)   # 서버·뷰어가 먼저 뜨게
+        if not TR.is_dir():
+            return
+        for d in sorted(TR.iterdir()):
+            if not d.is_dir() or d.name.startswith(".") or d.name in self._live_sids:
+                continue
+            if self._needs_recover(d):
+                try:
+                    self._recover(d)
+                except Exception:
+                    logging.exception("복구 실패: %s", d.name)
+        if self.state == "idle":
+            self.fix.stop()
+        self._resume_jobs()
+
+    def _resume_jobs(self):
+        """앱이 꺼져 끊긴 다듬기·요약(meta.job)을 이어서 한다. 같은 작업이 JOB_RESUME_MAX 번 넘게
+        끊겼으면 자동으로 하지 않고 오류로 알린다 (버튼으로 이어서 할 수 있다)."""
+        if self.state != "idle" or self.polish["busy"] or self.summary["busy"] or self.course["busy"]:
+            return
+        found = []
+        for d in sorted(TR.iterdir(), reverse=True):
+            if d.is_dir() and not d.name.startswith("."):
+                try:
+                    meta = json.loads((d / "meta.json").read_text())
+                except Exception:
+                    continue
+                if meta.get("job") in ("polish", "summary"):
+                    found.append((d, meta["job"], meta.get("job_tries", 0) + 1))
+        for k, (d, kind, tries) in enumerate(found):
+            name = "다듬기" if kind == "polish" else "요약"
+            if k == 0 and tries <= JOB_RESUME_MAX:
+                ok, err = (self.start_polish if kind == "polish" else self.start_summary)(d.name, tries=tries)
+                if ok:
+                    continue
+                logging.error("%s 이어 하기 실패: %s %s", name, d.name, err)
+            elif k == 0:
+                setattr(self, kind, {"sid": d.name, "busy": False, "note": "",
+                                     "error": f"{name} 실패: 여러 번 중단돼 멈췄어요 — 다시 시도해 주세요"})
+                self.bump()
+            update_meta(d, job=None, job_tries=None)
+
+    def _recover(self, sess):
+        with self._rec_lock:   # 이 프로세스에서 시작한 세션은 크래시 잔재가 아니다
+            if sess.name in self._live_sids or not self._needs_recover(sess):
+                return
+            self.recover = sess.name; self.bump()
+            try:
+                self._recover_core(sess)
+            finally:
+                self.recover = ""; self.bump()
+
+    def _recover_core(self, sess):
+        mp = sess / "meta.json"
+        try:
+            meta = json.loads(mp.read_text())
+        except Exception:
+            meta = {"id": sess.name}
+        try:
+            lines = json.loads((sess / "lines.json").read_text())
+        except Exception:
+            lines = []
+        for k, l in enumerate(lines):
+            l.setdefault("i", k)
+        pcm = sess / "audio.pcm"
+        part = next_part(sess)
+        if pcm.exists() and pcm.stat().st_size > SR:
+            mine = [l for l in fill_parts(lines) if l.get("p") == part and isinstance(l.get("a"), (int, float))]
+            start = max((l["a"] + (l.get("d") or 1.0) for l in mine), default=0.0)
+            total = pcm.stat().st_size / 2 / SR
+            end_wall = datetime.datetime.fromtimestamp(pcm.stat().st_mtime)
+            ctx = (meta.get("context") or "").strip()[:CTX_MAX]
+            prompt = whisper_prompt(ctx, extra=subject_terms_text(meta, sess.name, 900))
+            langs = self.cfg.get("langs") or DEFAULT_LANGS
+            new = []
+
+            def emit(audio, at, dur):
+                at += start
+                r = self.fix.transcribe(audio, prompt, langs)
+                if r and r.get("text"):
+                    wall = end_wall - datetime.timedelta(seconds=max(0.0, total - at))
+                    new.append({"t": wall.strftime("%H:%M:%S"), "a": round(at, 2), "d": round(dur, 2),
+                                "p": part, "text": r["text"], "lang": r.get("lang", "en"),
+                                "ko": "" if hangul_dominant(r["text"]) else None, "at": time.time()})
+            seg = Segmenter(emit)
+            with pcm.open("rb") as f:
+                f.seek(int(start * SR) * 2)
+                while True:
+                    b = f.read(SR * 2 * 10)
+                    if len(b) < 2:
+                        break
+                    seg.feed(np.frombuffer(b[:len(b) // 2 * 2], dtype=np.int16).astype(np.float32) / 32768.0)
+                seg.flush()
+            base = max((l.get("i", -1) for l in lines), default=-1) + 1
+            for k, l in enumerate(new):
+                l["i"] = base + k
+            lines += new
+            ended = end_wall
+        else:
+            ended = datetime.datetime.now()
+        if lines:
+            write_session(sess, lines)
+        pcm_to_m4a(sess)
+        try:
+            meta = json.loads(mp.read_text())   # write_session 이 갱신한 n_lines·preview 포함
+        except Exception:
+            pass
+        meta.update({"state": "done", "polished": False, "ended": ended.isoformat()})
+        write_json_atomic(mp, meta)
 
     def _live_tail(self):
         """라이브 박스에 보일 텍스트 = 마지막 확정 라인 이후. lock 안에서 호출.
@@ -1483,6 +2036,8 @@ class Engine:
                 self.cfg[key] = val
             else:
                 return
+        elif key == "input":            # 입력 장치 이름 — 빈 문자열이면 기본
+            self.cfg[key] = str(val or "").strip()[:120]
         elif key == "mat_dir":          # 자료 자동 정리 폴더 — 빈 문자열이면 끔
             v = str(val or "").strip()
             if v and not pathlib.Path(v).expanduser().is_dir():
@@ -1675,9 +2230,120 @@ def agy_usage():
     return data
 
 
+# ---------- 오디오 파트 · 입력 장치 ----------
+# 녹음을 이어 붙이면 실행마다 audio.m4a, audio-2.m4a, audio-3.m4a … 가 생긴다.
+# 라인의 p 는 파트 번호(0부터), a 는 그 파트 안의 시작 초, d 는 길이.
+
+def part_name(k):
+    return "audio.m4a" if k == 0 else f"audio-{k + 1}.m4a"
+
+def next_part(sess):
+    return len(list(sess.glob("audio*.m4a")))
+
+def write_json_atomic(path, obj):
+    write_text_atomic(path, json.dumps(obj, ensure_ascii=False))
+
+def write_text_atomic(path, text):
+    """임시 파일에 쓰고 바꿔 끼운다 — 쓰는 도중 앱이 꺼져도 원래 파일이 반쯤 잘리지 않는다."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+def update_meta(sess, **kw):
+    """meta.json 을 다시 읽어 kw 를 반영(값이 None 이면 키 삭제)하고 원자적으로 쓴다."""
+    mp = sess / "meta.json"
+    try:
+        meta = json.loads(mp.read_text())
+    except Exception:
+        meta = {"id": sess.name}
+    for k, v in kw.items():
+        if v is None:
+            meta.pop(k, None)
+        else:
+            meta[k] = v
+    write_json_atomic(mp, meta)
+    return meta
+
+def pcm_to_m4a(sess):
+    """audio.pcm → 다음 파트 m4a. 성공하면 pcm 을 지운다."""
+    pcm = sess / "audio.pcm"
+    if not pcm.exists():
+        return True
+    if pcm.stat().st_size < SR * 2 // 10:     # 0.1초도 안 되면 버린다
+        pcm.unlink(); return True
+    out = sess / part_name(next_part(sess))
+    r = subprocess.run([FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
+                        "-f", "s16le", "-ar", str(SR), "-ac", "1", "-i", str(pcm),
+                        "-c:a", "aac", "-b:a", "48k", "-movflags", "+faststart", str(out)])
+    if r.returncode == 0:
+        pcm.unlink(); return True
+    out.unlink(missing_ok=True)
+    return False
+
+def fill_parts(lines):
+    """p 가 없는 옛 라인에 파트 번호를 채운다 — 이어 녹음하면 a 가 0 근처로 되돌아가는 점을 쓴다."""
+    cur, prev = 0, -1.0
+    for l in lines:
+        a = l.get("a")
+        if isinstance(l.get("p"), int):
+            cur = l["p"]
+        elif isinstance(a, (int, float)):
+            if a < prev - 1.0:
+                cur += 1
+            l["p"] = cur
+        if isinstance(a, (int, float)):
+            prev = a
+    return lines
+
+def hms(sec):
+    sec = int(max(0, sec))
+    return f"{sec // 3600:02d}:{sec // 60 % 60:02d}:{sec % 60:02d}"
+
+def probe_duration(path):
+    try:
+        r = subprocess.run([FFPROBE, "-v", "error", "-show_entries", "format=duration",
+                            "-of", "csv=p=0", str(path)], capture_output=True, text=True, timeout=30)
+        return float(r.stdout.strip())
+    except Exception:
+        pass
+    try:
+        r = subprocess.run([FFMPEG, "-hide_banner", "-i", str(path)],
+                           capture_output=True, text=True, timeout=30)
+        m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", r.stderr)
+        return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+    except Exception:
+        return 0.0
+
+def list_input_devices():
+    """avfoundation 오디오 입력 장치 이름 (인덱스 순)."""
+    try:
+        r = subprocess.run([FFMPEG, "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return []
+    out, on = [], False
+    for line in r.stderr.splitlines():
+        if "audio devices" in line:
+            on = True; continue
+        if on:
+            m = re.search(r"\]\s*\[(\d+)\]\s*(.+)$", line)
+            if not m:
+                break
+            out.append(m.group(2).strip())
+    return out
+
+def input_arg(name):
+    """설정한 장치 이름 → ffmpeg avfoundation 입력. 없거나 빠졌으면 기존 기본값(:0)."""
+    if name:
+        devs = list_input_devices()
+        if name in devs:
+            return f":{devs.index(name)}"
+    return ":0"
+
+
 def write_session(sess, lines):
     """세션 라인을 디스크에 반영 — lines.json · transcript.md · meta(n_lines/preview)."""
-    (sess / "lines.json").write_text(json.dumps(lines, ensure_ascii=False))
+    write_json_atomic(sess / "lines.json", lines)
     md = sess / "transcript.md"
     head = ""
     try:
@@ -1700,7 +2366,7 @@ def write_session(sess, lines):
         meta = {"id": sess.name}
     meta["n_lines"] = len(lines)
     meta["preview"] = lines[0]["text"][:80] if lines else ""
-    mp.write_text(json.dumps(meta, ensure_ascii=False))
+    write_json_atomic(mp, meta)
 
 
 def apply_line_ops(lines, action, ids, text, ko):

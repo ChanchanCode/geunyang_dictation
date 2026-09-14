@@ -419,6 +419,38 @@ main.side #koHandle{display:block;position:absolute;top:0;bottom:0;
   box-shadow:0 6px 18px rgba(0,0,0,.12)}
 #dock button{height:30px;padding:0 14px;font-size:12.5px;border-radius:7px}
 @media(max-width:760px){aside{display:none}#dock{left:0}}
+#dock{gap:8px;align-items:center}
+#dock .split{display:flex}
+#dock .split #dRec{border-radius:7px 0 0 7px}
+#dock .split .caret{border-radius:0 7px 7px 0;padding:0 7px;border-left:1px solid rgba(255,255,255,.35)}
+.smenu.fixed{position:fixed;top:auto;right:auto;z-index:45;min-width:140px}
+/* 재생 바 */
+#dock #player[hidden]{display:none}
+#dock #player{align-items:center;gap:4px;padding:5px 8px}
+#player button{width:26px;height:26px;padding:0;border:0;background:transparent;border-radius:6px;
+  display:flex;align-items:center;justify-content:center;color:var(--ink)}
+#player button:hover{background:var(--line)}
+#player #pRate{width:auto;padding:0 6px;font:500 11px "IBM Plex Mono",ui-monospace,monospace;color:var(--ink-soft)}
+#pBar{width:150px;height:14px;cursor:pointer;position:relative;margin:0 4px}
+#pBar::before{content:"";position:absolute;left:0;right:0;top:5px;height:4px;border-radius:2px;background:var(--line-strong)}
+#pBar i{position:absolute;left:0;top:5px;height:4px;border-radius:2px;background:var(--accent)}
+#pTime{font:11px "IBM Plex Mono",ui-monospace,monospace;color:var(--ink-soft);min-width:78px;text-align:center;white-space:nowrap}
+.ln.play time{color:var(--accent);font-weight:600}
+.ln.play time::before{content:"▶ ";font-size:8px;vertical-align:1px}
+/* 검색 결과 */
+.sh{display:flex;gap:10px;padding:4px 12px 4px 22px;border-radius:8px;cursor:pointer;font-size:12.5px}
+.sh:hover{background:var(--accent-soft)}
+.sh .sht{flex:none;min-width:54px;color:var(--ink-soft);font:11px/1.9 "IBM Plex Mono",ui-monospace,monospace}
+.sh .shs{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-soft)}
+.sr .srn{color:var(--ink-soft);font-size:11px;margin-left:6px}
+#sres mark{background:transparent;color:var(--accent);font-weight:600}
+/* 사이드바 과목 그룹 — 정리본 버튼 */
+.grow .gl{display:flex;align-items:center;gap:2px;min-width:0}
+.grow .gcourse{width:20px;height:20px;padding:0;border:0;background:transparent;color:var(--ink-soft);
+  border-radius:5px;display:flex;align-items:center;justify-content:center;visibility:hidden}
+.grow:hover .gcourse{visibility:visible}
+.grow .gcourse:hover{background:var(--line);color:var(--ink)}
+.sumBar .cl{height:24px;line-height:22px;font-size:12px;padding:0 9px}
 </style>
 <div class="wrap">
 <aside>
@@ -451,6 +483,7 @@ main.side #koHandle{display:block;position:absolute;top:0;bottom:0;
         <div id="langChips" hidden></div>
         <div class="sep"></div>
         <div class="row"><span>번역</span><div class="seg" data-g="tr"><button data-v="live">실시간</button><button data-v="after">다듬을 때</button><button data-v="off">끔</button></div></div>
+        <div class="row"><span>입력</span><select id="selInput"><option value="">기본</option></select></div>
         <div class="row"><span>라이브</span><div class="seg" data-g="live"><button data-v="on">켬</button><button data-v="off">끔</button></div></div>
         <div id="memBox" title="실측 상수 기반 추정치다. 디코드 순간 피크는 이보다 0.5~1GB 높다.">
           <div class="brow"><span>메모리</span><div class="bar stack"><i id="mBase"></i><i id="mFix"></i><i id="mLive"></i></div><b id="mPct">—</b></div>
@@ -495,7 +528,14 @@ main.side #koHandle{display:block;position:absolute;top:0;bottom:0;
   </div>
 </main>
 </div>
-<div id="dock" hidden><div class="bar" id="dockBar"></div></div>
+<div id="dock" hidden><div class="bar" id="player" hidden>
+  <button id="pBack" title="5초 뒤로"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 3 3 9 9 9"/></svg></button>
+  <button id="pPlay" title="재생/일시정지"></button>
+  <div id="pBar"><i></i></div>
+  <span id="pTime">0:00</span>
+  <button id="pRate" title="속도">1×</button>
+  <button id="pClose" title="닫기"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg></button>
+</div><div class="bar" id="dockBar"></div></div>
 <div id="updMask" hidden><div id="updCard">
   <h3>새로운 업데이트가 있습니다</h3>
   <div id="updVer"></div>
@@ -507,7 +547,7 @@ main.side #koHandle{display:block;position:absolute;top:0;bottom:0;
   <div class="spanel">
     <div class="srow">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
-      <input id="sq" placeholder="세션 검색" spellcheck="false">
+      <input id="sq" placeholder="검색" spellcheck="false">
       <button id="sqClose" title="닫기">✕</button>
     </div>
     <div id="sres"></div>
@@ -518,6 +558,7 @@ const $=id=>document.getElementById(id);
 const esc=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;');
 const escA=t=>esc(String(t)).replace(/"/g,'&quot;');
 let view="home", rev=-1, ST=null, prevState=null, sessCache=null, jobSig="", tab="trans", SUBJ=null;
+let COURSE=null;   // view==="course" 일 때 {subject, data}
 
 /* ── 설정 ── */
 function setSeg(g,v){document.querySelectorAll('.seg[data-g="'+g+'"] button')
@@ -753,6 +794,7 @@ async function fetchAgy(){
 $("btnDl").onclick=e=>{   // 번역본 / 요약본 고르기
   e.stopPropagation();
   if(view==="home")return;
+  if(view==="course"){if(COURSE)location.href="/download_course?subject="+encodeURIComponent(COURSE.subject);return}
   const old=$("dlMenu"); if(old){old.remove();return}
   const hasSum=!!(sessCache&&sessCache.summary);
   const m=document.createElement("div"); m.className="smenu"; m.id="dlMenu";
@@ -765,7 +807,8 @@ document.addEventListener("click",e=>{if(!e.target.closest("#dlWrap")){const m=$
 $("btnCopy").onclick=async()=>{
   if(view==="home")return;
   const lines=isLive()?ST.lines:(sessCache?sessCache.lines:[]);
-  const text=(tab==="sum"&&sessCache&&sessCache.summary)?sessCache.summary
+  const text=view==="course"?((COURSE&&COURSE.data&&COURSE.data.md)||"")
+    :(tab==="sum"&&sessCache&&sessCache.summary)?sessCache.summary
     :lines.map(l=>"["+l.t+"] "+l.text+(l.ko?"\n"+l.ko:"")).join("\n\n");
   let ok=false;
   try{await navigator.clipboard.writeText(text);ok=true;}
@@ -804,27 +847,38 @@ $("matPick").onclick=async e=>{
 $("matClear").onclick=async e=>{e.stopPropagation();await saveCfg({mat_dir:""});showMat("");};
 $("btnQuit").onclick=async()=>{await post("quit");
   $("st").textContent="엔진 종료됨 — 앱 아이콘을 다시 실행하면 켜진다";};
+async function fetchDevices(){
+  try{
+    const r=await api("/api/devices"), sel=$("selInput");
+    const names=r.devices||[];
+    if(r.input&&names.indexOf(r.input)<0)names.push(r.input);
+    sel.innerHTML='<option value="">기본</option>'+names.map(n=>'<option value="'+escA(n)+'">'+esc(n)+'</option>').join('');
+    sel.value=r.input||"";
+  }catch(e){}
+}
+$("selInput").onchange=()=>saveCfg({input:$("selInput").value});
 $("btnGear").onclick=e=>{e.stopPropagation();
   const opening=$("pop").hidden;
   $("pop").hidden=!opening?true:false;$("filesPop").hidden=true;
   if(opening){
     $("langChips").hidden=true; $("langHead").classList.remove("open");
     $("langCaret").textContent="▸";
-    fetchAgy();fetchMem();fetchUpd();fetchMat();
+    fetchAgy();fetchMem();fetchUpd();fetchMat();fetchDevices();
   }};
 document.addEventListener("click",e=>{if(!e.target.closest("#gearWrap"))$("pop").hidden=true});
 
 /* ── 네비게이션 ── */
-$("logoBtn").onclick=()=>{view="home";rev=-1;render();};
+$("logoBtn").onclick=()=>{closePlayer();view="home";rev=-1;render();};
 async function newSession(){
   const r=await api("/api/session/new",{method:"POST",
     headers:{"Content-Type":"application/json"},body:"{}"});
-  sessCache={lines:[]};tab="trans";SUBJ=null;
+  closePlayer();sessCache={lines:[]};tab="trans";SUBJ=null;
   view=r.id;rev=-1;render();loadSessions();
 }
 $("btnNew").onclick=newSession;
 $("btnNewHome").onclick=newSession;
 async function openSession(id){
+  if(PL&&PL.sid!==id)closePlayer();
   view=id;rev=-1;sessCache=null;SEL.clear();selAnchor=null;editing=false;closeLineMenu();
   tab="trans";setSeg("tab","trans");SUBJ=null;
   if(!(ST&&ST.sid===id&&ST.state!=="idle")){
@@ -833,8 +887,141 @@ async function openSession(id){
   render();loadSessions();scrollTo(0,0);
 }
 
+/* ── 파일에서 받아쓰기 ── */
+async function importPick(){
+  if(ST&&ST.state!=="idle"){alert("녹음이 끝난 뒤에 가져올 수 있어요");return}
+  const sid=(view!=="home"&&view!=="course")?view:"";
+  const r=await apiPost("/api/session/import",{id:sid});
+  if(r.ok&&r.id)openSession(r.id);
+  else if(r.error)alert(r.error);
+}
+async function importUpload(f){
+  if(ST&&ST.state!=="idle"){alert("녹음이 끝난 뒤에 가져올 수 있어요");return}
+  const sid=(view!=="home"&&view!=="course")?view:"";
+  ctxSt="올리는 중… "+f.name;ctxShowStatus();
+  let r={};
+  try{r=await (await fetch("/api/session/import_upload?id="+encodeURIComponent(sid)+"&name="+encodeURIComponent(f.name),
+    {method:"POST",body:f})).json()}catch(e){r={error:"올리지 못했어요"}}
+  ctxSt="";ctxShowStatus();
+  if(r.ok&&r.id)openSession(r.id);
+  else alert(r.error||"가져오지 못했어요");
+}
+const MEDIA_RE=/\.(m4a|mp3|wav|aac|flac|ogg|opus|webm|mp4|mov|mkv|m4v|caf|aiff?|wma)$/i;
+
+/* ── 재생 (라인 우클릭 → 재생) ── */
+const AU=new Audio(); AU.preload="auto";
+let PL=null, PLAY_I=null, rateIdx=0;
+const RATES=[1,1.25,1.5,2,0.75];
+const ICON_PLAY='<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l13-7.5z"/></svg>';
+const ICON_PAUSE='<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4.5" width="4" height="15" rx="1"/><rect x="14" y="4.5" width="4" height="15" rx="1"/></svg>';
+function fmtT(s){s=Math.max(0,Math.floor(s||0));const h=Math.floor(s/3600),m=Math.floor(s/60)%60,x=String(s%60).padStart(2,"0");
+  return h?h+":"+String(m).padStart(2,"0")+":"+x:m+":"+x}
+function playLine(l){
+  if(!l||typeof l.a!=="number"||view==="home"||view==="course")return;
+  const sid=view, p=l.p||0, t=Math.max(0,l.a-0.25);
+  const go=()=>{try{AU.currentTime=t}catch(e){}AU.playbackRate=RATES[rateIdx];AU.play().catch(()=>{})};
+  $("player").hidden=false;
+  if(PL&&PL.sid===sid&&PL.p===p&&isFinite(AU.duration)&&t<AU.duration-0.5){go();return}
+  PL={sid,p};
+  AU.onloadedmetadata=()=>{AU.onloadedmetadata=null;go()};
+  AU.src="/audio/"+encodeURIComponent(sid)+"/"+p+"?v="+Date.now();   // 녹음 중 파트는 길이가 늘어나니 매번 새로
+  paintPlayer();
+}
+function closePlayer(){
+  if(!PL&&$("player").hidden)return;
+  AU.pause();AU.onloadedmetadata=null;AU.removeAttribute("src");AU.load();
+  PL=null;$("player").hidden=true;markPlaying(null);
+}
+function markPlaying(i){
+  if(i===PLAY_I)return;
+  PLAY_I=i;
+  document.querySelectorAll("#log .ln.play").forEach(el=>el.classList.remove("play"));
+  if(i!==null){const el=document.querySelector('#log .ln[data-i="'+i+'"]');if(el)el.classList.add("play")}
+}
+function paintPlayer(){
+  if(!PL)return;
+  const d=AU.duration, t=AU.currentTime||0;
+  $("pPlay").innerHTML=AU.paused?ICON_PLAY:ICON_PAUSE;
+  $("pTime").textContent=fmtT(t)+" / "+(isFinite(d)?fmtT(d):"–");
+  $("pBar").firstElementChild.style.width=(isFinite(d)&&d?Math.min(100,t/d*100):0)+"%";
+  let cur=null;
+  if(view===PL.sid)for(const l of curLines()){
+    if((l.p||0)!==PL.p||typeof l.a!=="number")continue;
+    if(l.a<=t+0.3)cur=l.i;else break;
+  }
+  markPlaying(AU.paused&&!t?null:cur);
+}
+["timeupdate","play","pause","durationchange"].forEach(ev=>AU.addEventListener(ev,paintPlayer));
+AU.addEventListener("error",()=>{if(PL&&AU.getAttribute("src")){$("pTime").textContent="오디오 없음";$("pPlay").innerHTML=ICON_PLAY}});
+$("pPlay").onclick=()=>{if(!PL)return;AU.paused?AU.play().catch(()=>{}):AU.pause()};
+$("pBack").onclick=()=>{if(PL)AU.currentTime=Math.max(0,AU.currentTime-5)};
+$("pRate").onclick=()=>{rateIdx=(rateIdx+1)%RATES.length;AU.playbackRate=RATES[rateIdx];$("pRate").textContent=RATES[rateIdx]+"×"};
+$("pClose").onclick=closePlayer;
+$("pBar").onclick=e=>{
+  if(!PL||!isFinite(AU.duration))return;
+  const r=$("pBar").getBoundingClientRect();
+  AU.currentTime=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*AU.duration;
+};
+
+/* ── 과목 정리본 ── */
+let courseSig="", courseJobSig="";
+async function openCourse(subject){
+  if(!subject)return;
+  closeMenu();closePlayer();closeSearch();
+  view="course";COURSE={subject,data:null};sessCache=null;SEL.clear();editing=false;closeLineMenu();
+  tab="sum";courseSig="";rev=-1;render();scrollTo(0,0);
+  try{const d=await api("/api/course?subject="+encodeURIComponent(subject));
+    if(view==="course"&&COURSE&&COURSE.subject===subject){COURSE.data=d;courseSig="";tocSig="";render()}}catch(e){}
+}
+function courseJob(){
+  const j=ST&&ST.course;
+  return j&&COURSE&&subjKey(j.subject)===subjKey(COURSE.subject)?j:null;
+}
+function renderCourse(){
+  const c=COURSE&&COURSE.data, j=courseJob(), busy=!!(j&&j.busy);
+  const sig=[COURSE&&COURSE.subject,!!c,c&&c.at,c&&c.md.length,busy&&j.note].join("|");
+  if(sig===courseSig)return;
+  courseSig=sig;sumSig="";
+  const v=$("sumView");
+  if(!c){v.innerHTML="";return}
+  const n=c.sessions.length, ns=c.sessions.filter(s=>s.summary).length;
+  const lect='<button class="cl" id="cLect">강의 '+n+' ▾</button>';
+  if(c.md){
+    const at=c.at?new Date(c.at):null;
+    v.innerHTML='<div class="sumBar">'+lect+'<span class="sp">'+(at?at.toLocaleString("ko-KR",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}):"")+
+      (c.stale&&!busy?' · 새 강의 반영 안 됨':'')+'</span>'+(busy?'<span>✦ '+esc(j.note||"")+'</span>':'')+
+      '</div><div class="sum">'+md2html(c.md)+'</div>'+
+      (busy?'':'<div class="sumFoot"><a id="cRedo">다시 만들기</a></div>');
+    if($("cRedo"))$("cRedo").onclick=()=>{if(confirm("정리본을 다시 만들까요?"))startCourse()};
+  }else if(busy){
+    v.innerHTML='<div class="sumEmpty"><p>✦ '+esc(j.note||"정리 중…")+'</p></div>';
+  }else{
+    v.innerHTML='<div class="sumEmpty"><p><b>'+esc(COURSE.subject)+'</b></p><p>'+lect+' · 요약 '+ns+'</p><button id="cGo" class="rec">✦ 정리본 만들기</button></div>';
+    $("cGo").onclick=startCourse;
+  }
+  if($("cLect"))$("cLect").onclick=e=>{
+    e.stopPropagation();closeMenu();
+    const m=document.createElement("div");m.className="smenu fixed";
+    m.innerHTML=c.sessions.slice().reverse().map(s=>'<button data-id="'+escA(s.id)+'">'+esc(s.title)+'</button>').join('');
+    document.body.appendChild(m);
+    const r=e.currentTarget.getBoundingClientRect();
+    m.style.left=r.left+"px";m.style.top=(r.bottom+4)+"px";
+    m.querySelectorAll("button").forEach(b=>b.onclick=ev=>{ev.stopPropagation();closeMenu();openSession(b.dataset.id)});
+  };
+}
+async function startCourse(){
+  if(!COURSE)return;
+  const r=await apiPost("/api/course",{subject:COURSE.subject});
+  if(!r.ok){alert(r.error||"정리본을 시작하지 못했어요");return}
+  if(ST)ST.course={subject:COURSE.subject,busy:true,note:"준비 중…",error:""};
+  courseSig="";render();
+}
+
 /* ── 렌더 ── */
-function outline(){return (sessCache&&sessCache.outline)||[]}
+function outline(){
+  if(view==="course")return (COURSE&&COURSE.data&&COURSE.data.outline)||[];
+  return (sessCache&&sessCache.outline)||[];
+}
 /* 목차 섹션 → 전사 라인 앵커. start(라인 i) 이상인 첫 라인 앞에 구분선을 넣는다 (지워진 라인 대비) */
 function secAnchors(lines){
   const at={}; if(isLive())return at;
@@ -855,10 +1042,11 @@ function renderLines(lines){
   const at=secAnchors(lines), side=layoutMode()==="side";
   return lines.map((l,idx)=>{
     const pre=(at[idx]||[]).map(secHtml).join('');
-    if(side)return pre+'<div class="ln pair'+(SEL.has(l.i)?" sel":"")+'" data-i="'+l.i+
+    const cls=(SEL.has(l.i)?" sel":"")+(PLAY_I===l.i?" play":"");
+    if(side)return pre+'<div class="ln pair'+cls+'" data-i="'+l.i+
       '"><div class="c-en"><time>'+l.t+'</time><span class="en">'+esc(l.text)+
       '</span></div><div class="c-ko">'+(l.ko?esc(l.ko):'')+'</div></div>';
-    return pre+'<div class="ln inline'+(SEL.has(l.i)?" sel":"")+'" data-i="'+l.i+
+    return pre+'<div class="ln inline'+cls+'" data-i="'+l.i+
       '"><time>'+l.t+'</time><span class="en">'+esc(l.text)+
       '</span>'+(l.ko?'<span class="ko">'+esc(l.ko)+'</span>':'')+'</div>';
   }).join('');
@@ -959,11 +1147,11 @@ function md2html(md){
 }
 let sumSig="";
 function renderSummary(){
-  const sm=ST&&ST.summary, busy=sm&&sm.busy&&sm.sid===view;
+  const sm=ST&&ST.summary, busy=sm&&sm.busy&&sm.sid===view, err=!busy&&sm&&sm.sid===view&&sm.error||"";
   const md=(sessCache&&sessCache.summary)||"";
-  const sig=(busy?"busy:"+(sm.note||""):"")+"|"+(sessCache?sessCache.summary_at:"")+"|"+md.length;
+  const sig=view+"|"+(busy?"busy:"+(sm.note||""):"")+"|"+err+"|"+(sessCache?sessCache.summary_at:"")+"|"+md.length;
   if(sig===sumSig)return;
-  sumSig=sig;
+  sumSig=sig;courseSig="";
   const v=$("sumView");
   if(md){
     const at=sessCache.summary_at?new Date(sessCache.summary_at):null;
@@ -976,7 +1164,8 @@ function renderSummary(){
   }else if(busy){
     v.innerHTML='<div class="sumEmpty"><p>✦ '+esc(sm.note||"요약 중…")+'</p><p style="font-size:12.5px">자료는 올릴 때 미리 텍스트로 바꿔 둬요(안 된 게 있으면 먼저 바꾸고) → 다듬기 → 요약. 이 화면을 떠나도 계속 돼요.</p></div>';
   }else{
-    v.innerHTML='<div class="sumEmpty"><p>강의 요약·정리본을 만들어요. 아직 다듬지 않았으면 먼저 다듬고, 강의자료(PDF)가 있으면 오늘 어느 페이지를 다뤘는지도 붙여요. 자료를 더 넣으려면 위의 📎 버튼. 목차가 생기면 번역 탭에서도 바로 이동할 수 있어요.</p><button id="sumGo" class="rec">✦ 요약 만들기</button></div>';
+    v.innerHTML=err?'<div class="sumEmpty"><p>⚠ '+esc(err)+'</p><p style="font-size:12.5px">다듬기는 끝난 곳까지 저장돼 있어서, 다시 시도하면 거기서 이어 해요. 인터넷이 끊겼으면 연결된 뒤에 눌러 주세요.</p><button id="sumGo" class="rec">✦ 다시 시도</button></div>'
+    :'<div class="sumEmpty"><p>강의 요약·정리본을 만들어요. 아직 다듬지 않았으면 먼저 다듬고, 강의자료(PDF)가 있으면 오늘 어느 페이지를 다뤘는지도 붙여요. 자료를 더 넣으려면 위의 📎 버튼. 목차가 생기면 번역 탭에서도 바로 이동할 수 있어요.</p><button id="sumGo" class="rec">✦ 요약 만들기</button></div>';
     $("sumGo").onclick=startSummary;
   }
 }
@@ -1040,7 +1229,8 @@ function openLineMenu(e,el){
   const one=SEL.size===1, l=lineById(i);
   const m=document.createElement("div");
   m.className="lmenu";
-  m.innerHTML=(one?'<button data-a="ed">원문 수정</button>':'')+
+  m.innerHTML=(l&&typeof l.a==="number"?'<button data-a="play">재생</button>':'')+
+    (one?'<button data-a="ed">원문 수정</button>':'')+
     (one&&l&&l.ko?'<button data-a="edko">번역 수정</button>':'')+
     '<button data-a="cp">복사</button>'+
     '<button data-a="del" class="del">삭제'+(one?'':' ('+SEL.size+'줄)')+'</button>'+
@@ -1052,7 +1242,8 @@ function openLineMenu(e,el){
   m.querySelectorAll("button").forEach(b=>b.onclick=ev=>{
     ev.stopPropagation();
     const a=b.dataset.a;closeLineMenu();
-    if(a==="ed")startEdit(i,"text");
+    if(a==="play"){clearSel();playLine(l)}
+    else if(a==="ed")startEdit(i,"text");
     else if(a==="edko")startEdit(i,"ko");
     else if(a==="cp")copySel();
     else if(a==="del")delSel();
@@ -1278,6 +1469,8 @@ function readB64(f){return new Promise((ok,no)=>{const r=new FileReader();
   r.onload=()=>ok(String(r.result).split(",")[1]||"");r.onerror=no;r.readAsDataURL(f)})}
 async function ctxAddFiles(list,digest=true){   // digest=false: 녹음 뒤 자료 패널에서 — 맥락 노트는 안 건드린다
   if(view==="home"||ctxBusy||!list||!list.length)return;
+  const media=[...list].find(f=>MEDIA_RE.test(f.name));
+  if(media&&digest){importUpload(media);return}   // 녹음 전 화면에 녹음·영상 파일 → 그 파일을 받아쓴다
   const files=[...list].filter(f=>/\.(pdf|png|jpe?g|webp|gif|heic|txt|md)$/i.test(f.name));
   if(!files.length){ctxSt="PDF·이미지·텍스트 파일만 넣을 수 있어요";ctxShowStatus();return}
   ctxBusy=true;ctxSt="자료 올리는 중… ("+files.length+"개)";ctxShowStatus();
@@ -1321,12 +1514,19 @@ async function ctxClearFiles(){
   if(sessCache){sessCache.ctx_files=[];sessCache.ctx_info=[];}
   ctxSt="자료를 지웠어요";render();
 }
-function stLabel(s){return {idle:"대기",starting:"준비 중",recording:"녹음 중",
+function stLabel(s){return {idle:"대기",starting:"준비 중",recording:(ST&&ST.import)?"가져오는 중":"녹음 중",
   paused:"일시정지",finishing:"저장 중"}[s]||s}
 function isLive(){return ST&&ST.sid===view&&ST.state!=="idle"}
 function render(){
   $("home").hidden=view!=="home";
   $("sessView").hidden=view==="home";
+  if(view==="course"){
+    const has=!!(COURSE&&COURSE.data&&COURSE.data.md);
+    $("btnDl").hidden=!has;$("btnCopy").hidden=!has;$("btnFiles").hidden=true;$("filesPop").hidden=true;
+    $("tabs").hidden=true;$("dock").hidden=true;$("selBar").hidden=true;closeLineMenu();
+    $("logWrap").hidden=true;$("liveBox").style.display="none";$("sumView").hidden=false;
+    renderCourse();renderToc();return;
+  }
   $("btnDl").hidden=view==="home";
   $("btnCopy").hidden=view==="home";
   renderDock();
@@ -1395,12 +1595,15 @@ function render(){
 }
 function renderDock(){
   const bar=$("dockBar");
-  if(view==="home"){$("dock").hidden=true;return}
+  if(view==="home"||view==="course"){$("dock").hidden=true;return}
   $("dock").hidden=false;
   const s=ST?ST.state:"idle";
   const mine=ST&&ST.sid===view;
   let html="";
-  if(mine&&s==="recording"){
+  if(mine&&s==="recording"&&ST.import){
+    const im=ST.import, pct=im.dur?Math.min(99,Math.floor(im.done/im.dur*100)):0;
+    html='<button disabled>가져오는 중 '+pct+'%</button><button id="dStop">중단</button>';
+  }else if(mine&&s==="recording"){
     html='<button id="dPause">일시정지</button><button id="dStop">녹음 종료</button>';
   }else if(mine&&s==="paused"){
     html='<button id="dPause" class="rec">재개</button><button id="dStop">녹음 종료</button>';
@@ -1410,18 +1613,31 @@ function renderDock(){
     html='<button disabled>다른 세션 녹음 중</button>';
   }else{
     const has=sessCache&&sessCache.lines&&sessCache.lines.length>0;
-    html='<button id="dRec" class="rec">● '+(has?"녹음 이어하기":"녹음 시작")+'</button>';
+    html='<span class="split"><button id="dRec" class="rec">● '+(has?"녹음 이어하기":"녹음 시작")+'</button>'+
+      '<button id="dMore" class="rec caret" title="더보기">▾</button></span>';
     const p=ST&&ST.polish, sm=ST&&ST.summary;
     if(p&&p.busy&&p.sid===view)html+='<button disabled>✦ 다듬는 중…</button>';
     else if(sm&&sm.busy&&sm.sid===view)html+='<button disabled>✦ 요약 중…</button>';
     else{
-      if(has&&sessCache&&!sessCache.polished)html+='<button id="dPolish" title="전체 문맥과 강의자료로 원문을 교정하고 번역을 다시 만들어요">✦ 다듬기</button>';
-      if(has&&sessCache&&!sessCache.summary)html+='<button id="dSum" title="강의 요약·정리본을 만들어요 (다듬기가 안 됐으면 먼저 다듬어요)">✦ 요약</button>';
+      const pd=sessCache&&sessCache.polish_done, pErr=p&&p.error&&p.sid===view, sErr=sm&&sm.error&&sm.sid===view;
+      if(has&&sessCache&&!sessCache.polished)html+=pd
+        ?'<button id="dPolish" title="끊긴 곳('+pd+'줄)부터 이어서 다듬어요">✦ 다듬기 이어하기</button>'
+        :'<button id="dPolish" title="전체 문맥과 강의자료로 원문을 교정하고 번역을 다시 만들어요">✦ '+(pErr?"다듬기 다시 시도":"다듬기")+'</button>';
+      if(has&&sessCache&&(!sessCache.summary||sErr))html+='<button id="dSum" title="강의 요약·정리본을 만들어요 (다듬기가 안 됐으면 먼저 다듬어요)">✦ '+(sErr?"요약 다시 시도":"요약")+'</button>';
     }
   }
   if(bar.innerHTML!==html){
     bar.innerHTML=html;
     if($("dRec"))$("dRec").onclick=async()=>{await saveCtx();post("start",{sid:view})};
+    if($("dMore"))$("dMore").onclick=e=>{
+      e.stopPropagation();closeMenu();
+      const m=document.createElement("div");m.className="smenu fixed";
+      m.innerHTML='<button>파일에서 받아쓰기</button>';
+      document.body.appendChild(m);
+      const r=e.currentTarget.getBoundingClientRect(), mr=m.getBoundingClientRect();
+      m.style.left=Math.max(8,r.right-mr.width)+"px";m.style.top=(r.top-mr.height-6)+"px";
+      m.firstElementChild.onclick=async ev=>{ev.stopPropagation();closeMenu();await saveCtx();importPick()};
+    };
     if($("dPause"))$("dPause").onclick=()=>post(ST.state==="paused"?"resume":"pause");
     if($("dStop"))$("dStop").onclick=()=>post("stop");
     if($("dPolish"))$("dPolish").onclick=async()=>{
@@ -1442,12 +1658,27 @@ async function tick(){
     const parts=[stLabel(s.state)];
     if(s.state!=="idle"&&s.sid)parts.push(s.sid);
     if(s.state!=="idle"&&s.lines.length)parts.push(s.lines.length+"줄");
+    if(s.state==="idle"&&s.recover)parts.splice(0,1,"복구 중",s.recover);
     if(s.error)parts.push("⚠ "+s.error);
     $("st").textContent=parts.join(" · ");
     const p=s.polish||{}, sm=s.summary||{};
     const mine=x=>x.sid===view;
-    $("note").textContent=(mine(sm)&&(sm.note||sm.error))?(sm.error||sm.note)
+    $("note").textContent=view==="course"?((courseJob()||{}).error||"")
+      :(mine(sm)&&(sm.note||sm.error))?(sm.error||sm.note)
       :(mine(p)&&(p.note||p.error))?(p.error||p.note):(s.trans||"");
+    if(view==="course"){   // 정리본 작업 진행 반영, 끝나면 다시 읽는다
+      const cj=courseJob(), cs=cj?cj.busy+"|"+cj.note+"|"+cj.error:"";
+      if(cs!==courseJobSig){
+        const wasBusy=/^true/.test(courseJobSig);courseJobSig=cs;
+        if(wasBusy&&cj&&!cj.busy&&COURSE){
+          const subj=COURSE.subject;
+          try{const d=await api("/api/course?subject="+encodeURIComponent(subj));
+            if(view==="course"&&COURSE&&COURSE.subject===subj){COURSE.data=d;tocSig="";}}catch(e){}
+          loadSessions();
+        }
+        courseSig="";rev=-1;
+      }
+    }
     const sig=view+"#"+(mine(p)?p.note+"|"+p.busy:"")+"#"+(mine(sm)?sm.note+"|"+sm.busy:"");
     if(sig!==jobSig){
       const wasBusy=/\|true$/.test(jobSig.split("#")[2]||"");
@@ -1485,6 +1716,7 @@ async function tick(){
 let renaming=false, smenuOpen=false, SESS=[];
 const ICON_SEARCH='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>';
 const ICON_SLIDER='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9.5" cy="7" r="2.3" fill="var(--paper)"/><circle cx="14.5" cy="17" r="2.3" fill="var(--paper)"/></svg>';
+const ICON_BOOK='<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.5C4.5 4 8 4 12 6c4-2 7.5-2 10-.5V19c-2.5-1.5-6-1.5-10 .5-4-2-7.5-2-10-.5z"/><line x1="12" y1="6" x2="12" y2="19.5"/></svg>';
 const CHEV='<svg class="chev CLS" width="9" height="9" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>';
 function groupLabel(ds){
   const d=new Date(ds+"T00:00:00");
@@ -1526,9 +1758,11 @@ function renderSessList(){
   for(const m of list){
     const g=bySubj?m._g:groupLabel((m.id||"").slice(0,10)), key=bySubj?"s:"+g:g;
     if(g!==lastG){
-      html+='<div class="grow"><button class="glab" data-g="'+escA(key)+'"><span class="gn">'+esc(g)+'</span>'+
+      html+='<div class="grow"><span class="gl"><button class="glab" data-g="'+escA(key)+'"><span class="gn">'+esc(g)+'</span>'+
         (bySubj?' <span class="gc">'+m._n+'</span>':'')+' '+
-        CHEV.replace("CLS",col.has(key)?"col":"")+'</button>'+(first?TOOLS:'')+'</div>';
+        CHEV.replace("CLS",col.has(key)?"col":"")+'</button>'+
+        (bySubj&&g!=="기타"?'<button class="gcourse" data-s="'+escA(g)+'" title="정리본">'+ICON_BOOK+'</button>':'')+
+        '</span>'+(first?TOOLS:'')+'</div>';
       lastG=g;first=false;
     }
     if(col.has(key))continue;
@@ -1557,6 +1791,7 @@ function renderSessList(){
     localStorage.setItem("gcol",JSON.stringify([...c]));
     renderSessList();
   });
+  document.querySelectorAll(".gcourse").forEach(b=>b.onclick=e=>{e.stopPropagation();openCourse(b.dataset.s)});
   document.querySelectorAll(".tSearch").forEach(b=>b.onclick=e=>{e.stopPropagation();openSearch()});
   document.querySelectorAll(".tFilter").forEach(b=>b.onclick=e=>{e.stopPropagation();openFilter(b)});
 }
@@ -1568,16 +1803,18 @@ addEventListener("click",e=>{
 function openMenu(el){
   closeMenu();smenuOpen=true;
   const arch=el.dataset.arch==="1";
+  const meta=SESS.find(x=>x.id===el.dataset.id)||{}, subj=meta.subject||subjectOf(meta);
   const m=document.createElement("div");
   m.className="smenu";
-  m.innerHTML='<button data-a="ren">이름 변경</button><button data-a="arch">'+
-    (arch?"보관 해제":"보관")+'</button><button data-a="del" class="del">삭제</button>';
+  m.innerHTML='<button data-a="ren">이름 변경</button>'+(subj?'<button data-a="course">과목 정리본</button>':'')+
+    '<button data-a="arch">'+(arch?"보관 해제":"보관")+'</button><button data-a="del" class="del">삭제</button>';
   el.appendChild(m);
   m.querySelectorAll("button").forEach(b=>b.onclick=async e=>{
     e.stopPropagation();
     const a=b.dataset.a;closeMenu();
     const hdr={method:"POST",headers:{"Content-Type":"application/json"}};
     if(a==="ren")renameUI(el);
+    else if(a==="course")openCourse(subj);
     else if(a==="arch"){
       await api("/api/session/archive",{...hdr,body:JSON.stringify({id:el.dataset.id,archived:!arch})});
       loadSessions();
@@ -1612,19 +1849,53 @@ document.addEventListener("click",()=>closeMenu());
 /* 검색 모달 */
 function openSearch(){closeMenu();$("searchOv").hidden=false;$("sq").value="";renderSearch("");$("sq").focus();}
 function closeSearch(){$("searchOv").hidden=true}
+let sqTimer=0, sqSeq=0;
+function sessTag(m){return groupMode()==="subject"?(m.subject||subjectOf(m)||groupLabel((m.id||"").slice(0,10))):groupLabel((m.id||"").slice(0,10))}
+function hl(text,toks){   // 찾은 낱말 강조 — 원문 위치로 표시한 뒤 이스케이프
+  const low=text.toLowerCase(), on=new Array(text.length).fill(false);
+  toks.forEach(t=>{for(let i=low.indexOf(t);t&&i>=0;i=low.indexOf(t,i+t.length))on.fill(true,i,i+t.length)});
+  let h="",cur=false;
+  for(let k=0;k<text.length;k++){if(on[k]!==cur){h+=cur?"</mark>":"<mark>";cur=on[k]}h+=esc(text[k])}
+  return h+(cur?"</mark>":"");
+}
 function renderSearch(q){
-  q=(q||"").toLowerCase();
-  const list=SESS.filter(m=>!q||((m.title||"")+" "+m.id+" "+(m.preview||"")).toLowerCase().includes(q));
-  $("sres").innerHTML=list.map(m=>'<div class="sr" data-id="'+m.id+'"><span class="srt">'+
-    esc(m.title||m.id)+'</span><span class="srd">'+esc(groupMode()==="subject"?(subjectOf(m)||groupLabel((m.id||"").slice(0,10))):groupLabel((m.id||"").slice(0,10)))+
-    '</span></div>').join('')||'<div class="sr none">결과 없음</div>';
-  document.querySelectorAll(".sr[data-id]").forEach(el=>el.onclick=()=>{closeSearch();openSession(el.dataset.id);});
+  q=(q||"").trim();
+  clearTimeout(sqTimer);
+  if(!q){   // 빈 검색: 세션 목록
+    $("sres").innerHTML=SESS.map(m=>'<div class="sr" data-id="'+escA(m.id)+'"><span class="srt">'+
+      esc(m.title||m.id)+'</span><span class="srd">'+esc(sessTag(m))+'</span></div>').join('')||'<div class="sr none">결과 없음</div>';
+    bindSearch();return;
+  }
+  sqTimer=setTimeout(async()=>{
+    const seq=++sqSeq;let r=[];
+    try{r=await api("/api/search?q="+encodeURIComponent(q))}catch(e){}
+    if(seq!==sqSeq||$("sq").value.trim()!==q)return;
+    const toks=q.toLowerCase().split(/\s+/).filter(Boolean);
+    $("sres").innerHTML=r.map(s=>'<div class="sr" data-id="'+escA(s.id)+'"><span class="srt">'+hl(s.title||s.id,toks)+
+      (s.n?'<span class="srn">'+s.n+'</span>':'')+'</span><span class="srd">'+esc(sessTag(s))+'</span></div>'+
+      s.hits.map(h=>'<div class="sh" data-id="'+escA(s.id)+'"'+(h.f==="sum"?' data-k="'+h.k+'"':' data-i="'+h.i+'"')+
+        '><span class="sht">'+(h.f==="sum"?"요약":esc(h.t||""))+'</span><span class="shs">'+hl(h.s,toks)+'</span></div>').join('')
+    ).join('')||'<div class="sr none">결과 없음</div>';
+    bindSearch();
+  },160);
+}
+async function openHit(el){
+  closeSearch();
+  await openSession(el.dataset.id);
+  if(!isLive())rev=0;   // openSession 이 이미 그렸다 — 다음 tick 이 다시 그려 강조를 지우지 않게
+  if(el.dataset.i!==undefined)gotoLine(+el.dataset.i);
+  else if(el.dataset.k!==undefined){
+    setTab("sum");
+    setTimeout(()=>{const k=+el.dataset.k;if(k>=0)scrollToEl($("sum-"+k))},0);
+  }
+}
+function bindSearch(){
+  document.querySelectorAll("#sres [data-id]").forEach(el=>el.onclick=()=>openHit(el));
 }
 $("sq").oninput=()=>renderSearch($("sq").value);
 $("sq").onkeydown=e=>{
   if(e.key==="Escape")closeSearch();
-  if(e.key==="Enter"){const f=document.querySelector(".sr[data-id]");
-    if(f){closeSearch();openSession(f.dataset.id);}}
+  if(e.key==="Enter"){const f=document.querySelector("#sres [data-id]");if(f)openHit(f);}
 };
 $("sqClose").onclick=closeSearch;
 $("searchOv").onclick=e=>{if(e.target.id==="searchOv")closeSearch()};

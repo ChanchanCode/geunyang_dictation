@@ -4,7 +4,7 @@
 메뉴바 '냥' 아이콘: 대기 냥 · 녹음 냥● · 일시정지 냥‖
 뷰어: http://127.0.0.1:<port>  (config.json)
 """
-import json, pathlib, threading, webbrowser
+import json, pathlib, threading, time, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import rumps
@@ -14,6 +14,14 @@ import engine as eng
 ROOT = pathlib.Path(__file__).resolve().parent
 ENGINE = eng.Engine()
 VIEWER = ROOT / "viewer.html"
+IDLE_QUIT_SEC = 3600       # 뷰어 요청도 진행 중인 작업도 없이 이만큼 지나면 앱을 끈다
+LAST_USE = [time.time()]   # 마지막 사용 시각. 열린 뷰어는 1초마다 /api/state 를 부르니 뷰어가 닫혀야 멈춘다
+
+
+def busy():
+    """녹음·마무리·복구·다듬기·요약·정리본·자료 변환 중이면 True."""
+    return (ENGINE.state != "idle" or bool(ENGINE.recover) or eng.conv_busy()
+            or any(j.get("busy") for j in (ENGINE.polish, ENGINE.summary, ENGINE.course)))
 
 
 def ctx_files(sid):
@@ -41,7 +49,33 @@ def read_meta(sid):
 
 
 def write_meta(sid, meta):
-    (eng.TR / sid / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
+    eng.write_json_atomic(eng.TR / sid / "meta.json", meta)
+
+
+def query(path):
+    import urllib.parse
+    return {k: v[0] for k, v in urllib.parse.parse_qs(path.split("?", 1)[1]).items()} if "?" in path else {}
+
+
+def new_session():
+    """빈 세션 폴더를 만든다. 안 쓴 빈 세션은 정리한다."""
+    import datetime, shutil
+    if eng.TR.exists():
+        for d in eng.TR.iterdir():
+            try:
+                md = json.loads((d / "meta.json").read_text())
+                if md.get("state") == "new" and not (d / "lines.json").exists() \
+                        and not (d / "transcript.md").exists() and not (d / "src").exists():
+                    shutil.rmtree(d)
+            except Exception:
+                pass
+    base = datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
+    sid, k = base, 2
+    while (eng.TR / sid).exists():
+        sid = f"{base}-{k}"; k += 1
+    (eng.TR / sid).mkdir(parents=True)
+    write_meta(sid, {"id": sid, "state": "new", "started": datetime.datetime.now().isoformat()})
+    return sid
 
 
 def set_subject(sid, subject, title=None):
@@ -73,7 +107,61 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_audio(self, sid, k):
+        """세션 오디오 파트를 Range 로 보낸다. 굳힌 m4a 가 없고 녹음 중(또는 복구 전) pcm 이
+        그 파트면 WAV 헤더를 붙여 그대로 보낸다 — 녹음 중에도 앞부분을 들을 수 있다."""
+        import struct
+        sess = eng.TR / sid
+        f, head, ct = sess / eng.part_name(k), b"", "audio/mp4"
+        if not f.exists():
+            f = sess / "audio.pcm"
+            if not f.exists() or k != eng.next_part(sess):
+                self._send(b"not found", "text/plain", 404); return
+            n = f.stat().st_size // 2 * 2
+            head = (b"RIFF" + struct.pack("<I", 36 + n) + b"WAVEfmt " +
+                    struct.pack("<IHHIIHH", 16, 1, 1, eng.SR, eng.SR * 2, 2, 16) +
+                    b"data" + struct.pack("<I", n))
+            ct, size = "audio/wav", len(head) + n
+        else:
+            size = f.stat().st_size
+        a, b = 0, size - 1
+        rng = self.headers.get("Range", "")
+        m = __import__("re").match(r"bytes=(\d*)-(\d*)", rng)
+        if m and (m.group(1) or m.group(2)):
+            if m.group(1):
+                a = int(m.group(1)); b = int(m.group(2)) if m.group(2) else size - 1
+            else:
+                a = max(0, size - int(m.group(2)))
+            b = min(b, size - 1)
+            if a > b:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}"); self.end_headers(); return
+        self.send_response(206 if m else 200)
+        self.send_header("Content-Type", ct)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(b - a + 1))
+        if m:
+            self.send_header("Content-Range", f"bytes {a}-{b}/{size}")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            pos = a
+            if pos < len(head):
+                self.wfile.write(head[pos:b + 1]); pos = len(head)
+            if pos <= b:
+                with f.open("rb") as fh:
+                    fh.seek(pos - len(head))
+                    left = b - pos + 1
+                    while left > 0:
+                        chunk = fh.read(min(65536, left))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk); left -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_GET(self):
+        LAST_USE[0] = time.time()
         p = self.path.split("?")[0]
         if p == "/" or p == "/index.html":
             self._send(VIEWER.read_bytes(), "text/html; charset=utf-8")
@@ -95,12 +183,16 @@ class Handler(BaseHTTPRequestHandler):
                              r"\*\*(\d\d:\d\d:\d\d)\*\* (.+)(?:\n> (.+))?", md)]
             for k, l in enumerate(lines):
                 l.setdefault("i", k)   # 라인 편집용 안정 키
+            eng.fill_parts(lines)      # 재생용 오디오 파트 번호
             meta = read_meta(sid)
             sf = eng.TR / sid / "summary.md"
             summary = sf.read_text() if sf.exists() else ""
+            # 끊긴 다듬기 진행 — 라인 수가 그대로면 다음 다듬기가 여기서 이어 한다
+            pd = meta.get("polish_done", 0) if meta.get("polish_n") == len(lines) else 0
             self._send(json.dumps({
                 "lines": lines, "context": meta.get("context", ""),
                 "polished": bool(meta.get("polished")), "ctx_files": ctx_files(sid),
+                "polish_done": pd if 0 < pd < len(lines) and not meta.get("polished") else 0,
                 "ctx_info": ctx_info(sid),
                 "ctx_text": eng.ctx_text_files(eng.TR / sid), "conv": eng.conv_status(sid),
                 "subject": eng.subject_of(meta), "title": meta.get("title", ""),
@@ -116,6 +208,31 @@ class Handler(BaseHTTPRequestHandler):
         elif p == "/api/config":
             self._send(json.dumps({**ENGINE.cfg, "lang_options": eng.MAJOR_LANGS},
                                   ensure_ascii=False).encode())
+        elif p == "/api/devices":
+            self._send(json.dumps({"devices": eng.list_input_devices(),
+                                   "input": ENGINE.cfg.get("input", "")}, ensure_ascii=False).encode())
+        elif p == "/api/search":
+            q = query(self.path).get("q", "")[:100]
+            self._send(json.dumps(eng.search_sessions(q), ensure_ascii=False).encode())
+        elif p == "/api/course":
+            subject = " ".join(query(self.path).get("subject", "").split())[:40]
+            self._send(json.dumps(eng.course_info(subject) if subject else {},
+                                  ensure_ascii=False).encode())
+        elif p.startswith("/audio/"):
+            # /audio/<sid>/<파트 번호>
+            parts = p.split("/")
+            if len(parts) == 4 and parts[3].isdigit():
+                self._send_audio(pathlib.Path(parts[2]).name, int(parts[3]))
+            else:
+                self._send(b"not found", "text/plain", 404)
+        elif p == "/download_course":
+            subject = " ".join(query(self.path).get("subject", "").split())[:40]
+            f = eng.COURSE_DIR / f"{eng.course_key(subject)}.md"
+            if subject and f.exists():
+                self._send(f.read_bytes(), "text/markdown; charset=utf-8",
+                           dl=f"{subject.replace('/', '-')} 정리본.md", dl_ascii="course.md")
+            else:
+                self._send(b"not found", "text/plain", 404)
         elif p == "/api/update":
             self._send(json.dumps(eng.check_update("force=1" in self.path),
                                   ensure_ascii=False).encode())
@@ -141,31 +258,67 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(b"not found", "text/plain", 404)
 
+    def _import_start(self, sid, path, tmp=False):
+        if ENGINE.state != "idle":
+            return {"ok": False, "error": "녹음이 끝난 뒤에 가져올 수 있어요"}
+        sid = sid if sid and (eng.TR / sid).is_dir() else new_session()
+        ENGINE.start(sid, src=path, tmp=tmp)
+        return {"ok": True, "id": sid}
+
     def do_POST(self):
+        LAST_USE[0] = time.time()
         n = int(self.headers.get("Content-Length") or 0)
+        if self.path.startswith("/api/session/import_upload"):
+            # 끌어다 놓은 녹음·영상 파일: 원본 바이트 그대로 → <세션>/src/<이름> → 받아쓰기 시작
+            q = query(self.path)
+            name = pathlib.Path(q.get("name", "audio")).name.replace("\x00", "") or "audio"
+            if pathlib.Path(name).suffix.lower() not in eng.MEDIA_EXT or ENGINE.state != "idle":
+                self.rfile.read(n)
+                self._send(json.dumps({"ok": False, "error": "녹음 파일이 아니거나 녹음 중이에요"},
+                                      ensure_ascii=False).encode()); return
+            sid = pathlib.Path(q.get("id", "")).name
+            sid = sid if sid and (eng.TR / sid).is_dir() else new_session()
+            dst = eng.TR / sid / "src" / name
+            dst.parent.mkdir(exist_ok=True)
+            left = n
+            with dst.open("wb") as f:
+                while left > 0:
+                    chunk = self.rfile.read(min(1 << 20, left))
+                    if not chunk:
+                        break
+                    f.write(chunk); left -= len(chunk)
+            self._send(json.dumps(self._import_start(sid, dst, tmp=True), ensure_ascii=False).encode())
+            return
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             body = {}
         if self.path == "/api/session/new":
-            import datetime, shutil
-            if eng.TR.exists():  # 안 쓴 빈 세션 정리
-                for d in eng.TR.iterdir():
-                    try:
-                        md = json.loads((d / "meta.json").read_text())
-                        if md.get("state") == "new" and not (d / "lines.json").exists()                                 and not (d / "transcript.md").exists():
-                            shutil.rmtree(d)
-                    except Exception:
-                        pass
-            base = datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
-            sid, k = base, 2
-            while (eng.TR / sid).exists():
-                sid = f"{base}-{k}"; k += 1
-            (eng.TR / sid).mkdir(parents=True)
-            (eng.TR / sid / "meta.json").write_text(json.dumps(
-                {"id": sid, "state": "new",
-                 "started": datetime.datetime.now().isoformat()}, ensure_ascii=False))
-            self._send(json.dumps({"id": sid}).encode())
+            self._send(json.dumps({"id": new_session()}).encode())
+            return
+        if self.path == "/api/session/import":
+            # 파일에서 받아쓰기: 선택창(osascript)으로 경로를 받아 원본을 그 자리에서 읽는다
+            import subprocess
+            if ENGINE.state != "idle":
+                self._send(json.dumps({"ok": False, "error": "녹음이 끝난 뒤에 가져올 수 있어요"},
+                                      ensure_ascii=False).encode()); return
+            try:
+                r = subprocess.run(
+                    ["osascript", "-e", "activate", "-e",
+                     'POSIX path of (choose file with prompt "받아쓸 녹음·영상 파일" '
+                     'of type {"public.audio", "public.movie"})'],
+                    capture_output=True, text=True, timeout=300)
+                path = r.stdout.strip() if r.returncode == 0 else ""
+            except Exception:
+                path = ""
+            if not path or not pathlib.Path(path).is_file():
+                self._send(b'{"ok":false}'); return
+            sid = pathlib.Path(str(body.get("id", ""))).name
+            self._send(json.dumps(self._import_start(sid, path), ensure_ascii=False).encode())
+            return
+        if self.path == "/api/course":
+            ok, err = ENGINE.start_course(body.get("subject", ""))
+            self._send(json.dumps({"ok": ok, "error": err}, ensure_ascii=False).encode())
             return
         if self.path == "/api/control":
             a = body.get("action")
@@ -345,7 +498,7 @@ class Handler(BaseHTTPRequestHandler):
                 m.write_text(json.dumps(meta, ensure_ascii=False))
             self._send(b'{"ok":true}')
         elif self.path == "/api/session/delete":
-            import shutil, time
+            import shutil
             sid = pathlib.Path(str(body.get("id", ""))).name
             d = eng.TR / sid
             if sid and ENGINE.sid == sid and ENGINE.state in ("recording", "paused", "starting"):
@@ -382,8 +535,9 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(b'{"ok":false}', code=400)
         elif self.path == "/api/update":
-            if ENGINE.state != "idle":
-                self._send(json.dumps({"ok": False, "msg": "녹음을 끝낸 뒤에 업데이트할 수 있어요"},
+            if busy():
+                msg = "녹음을 끝낸 뒤에" if ENGINE.state != "idle" else "다듬기·요약 등 작업이 끝난 뒤에"
+                self._send(json.dumps({"ok": False, "msg": msg + " 업데이트할 수 있어요"},
                                       ensure_ascii=False).encode())
                 return
             ok, msg = eng.apply_update()
@@ -400,7 +554,7 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=_restart, daemon=True).start()
         elif self.path == "/api/config":
             for k in ("translate", "theme", "layout", "ko_width", "ko_font", "line_h",
-                      "agy_account", "live", "langs", "mat_dir", "toc_w"):
+                      "agy_account", "live", "langs", "mat_dir", "toc_w", "input"):
                 if k in body:
                     ENGINE.set_cfg(k, body[k])
             self._send(b'{"ok":true}')
@@ -475,6 +629,13 @@ class App(rumps.App):
         for k, it in self.tr_items.items():
             it.state = 1 if k == mode else 0
         self.m_live.state = 0 if ENGINE.cfg.get("live", "on") == "off" else 1
+        # 자동 종료: 작업이 끝난 뒤부터 센다. 뷰어가 닫힌 채 1시간 지나면 끈다
+        now = time.time()
+        if busy():
+            LAST_USE[0] = now
+        elif now - LAST_USE[0] >= IDLE_QUIT_SEC:
+            print(f"[자동 종료] {IDLE_QUIT_SEC // 60}분 동안 사용 없음", flush=True)
+            rumps.quit_application()
 
 
 def main():
