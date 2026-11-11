@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 OUT="$ROOT/dist/그냥받아쓰기-설치.command"
 mkdir -p "$ROOT/dist"
 T=$(mktemp -d)
-tar czf "$T/payload.tgz" -C "$ROOT" app.py engine.py viewer.html requirements.txt make_app.sh README.md assets
+tar czf "$T/payload.tgz" -C "$ROOT" app.py engine.py syscap.swift viewer.html requirements.txt make_app.sh README.md assets
 cat > "$OUT" << 'HEAD'
 #!/bin/zsh
 # 그냥 받아쓰기 — 원파일 설치기 (더블클릭 실행)

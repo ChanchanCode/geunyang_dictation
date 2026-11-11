@@ -13,7 +13,7 @@ sed -i '' "s/^VERSION = \".*\"/VERSION = \"$V\"/" engine.py
 grep -q "^VERSION = \"$V\"" engine.py || { echo "engine.py VERSION 치환 실패"; exit 1; }
 
 T=$(mktemp -d)
-tar czf "$T/payload.tgz" app.py engine.py viewer.html requirements.txt make_app.sh README.md assets
+tar czf "$T/payload.tgz" app.py engine.py syscap.swift viewer.html requirements.txt make_app.sh README.md assets
 ./build_installer.sh
 
 git add -A

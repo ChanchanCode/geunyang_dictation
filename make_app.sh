@@ -46,5 +46,7 @@ if command -v qlmanage >/dev/null; then
   fi
   rm -rf "$T"
 fi
+# 시스템 소리(Zoom 등) 헬퍼 — 미리 만들어 두면 첫 녹음이 바로 시작된다 (없으면 엔진이 처음 쓸 때 만든다)
+mkdir -p "$ROOT/.bin" && xcrun swiftc -O -swift-version 5 "$ROOT/syscap.swift" -o "$ROOT/.bin/syscap" 2>/dev/null || true
 codesign --force -s - "$APP" 2>/dev/null || true  # ad-hoc 서명 — 마이크 권한 재프롬프트 방지
 echo "생성: $APP"

@@ -19,9 +19,10 @@ LAST_USE = [time.time()]   # 마지막 사용 시각. 열린 뷰어는 1초마�
 
 
 def busy():
-    """녹음·마무리·복구·다듬기·요약·정리본·자료 변환 중이면 True."""
+    """녹음·마무리·복구·다듬기·요약·정리본·자료 변환·맥락 정리 중이면 True."""
     return (ENGINE.state != "idle" or bool(ENGINE.recover) or eng.conv_busy()
-            or any(j.get("busy") for j in (ENGINE.polish, ENGINE.summary, ENGINE.course)))
+            or bool(ENGINE.busy_jobs())
+            or any(j.get("busy") for j in (ENGINE.course, ENGINE.ctxjob)))
 
 
 def ctx_files(sid):
@@ -175,12 +176,7 @@ class Handler(BaseHTTPRequestHandler):
             lines = json.loads(f.read_text()) if f.exists() else []
             if not lines and (eng.TR / sid / "transcript.md").exists():
                 # 진행 중 크래시 등으로 lines.json 이 없으면 md 를 원문만이라도 보여준다
-                import re
-                md = (eng.TR / sid / "transcript.md").read_text()
-                lines = [{"t": m.group(1), "text": m.group(2),
-                          "ko": (m.group(3) or "").strip()}
-                         for m in re.finditer(
-                             r"\*\*(\d\d:\d\d:\d\d)\*\* (.+)(?:\n> (.+))?", md)]
+                lines = eng.md_lines((eng.TR / sid / "transcript.md").read_text())
             for k, l in enumerate(lines):
                 l.setdefault("i", k)   # 라인 편집용 안정 키
             eng.fill_parts(lines)      # 재생용 오디오 파트 번호
@@ -199,6 +195,14 @@ class Handler(BaseHTTPRequestHandler):
                 "title_auto": bool(meta.get("title_auto")),
                 "summary": summary, "summary_at": meta.get("summary_at", ""),
                 "outline": eng.parse_outline(summary)}, ensure_ascii=False).encode())
+        elif p == "/api/ctx":
+            # 자료 패널 전용 가벼운 상태 — 녹음 중에도 1초 폴링으로 안전하게 부를 수 있다
+            # (/api/session/<id> 는 lines.json 을 통째로 읽어 녹음 중에 쓰면 화면이 되감긴다)
+            sid = pathlib.Path(query(self.path).get("id", "")).name
+            self._send(json.dumps({
+                "ctx_files": ctx_files(sid), "ctx_info": ctx_info(sid),
+                "ctx_text": eng.ctx_text_files(eng.TR / sid),
+                "conv": eng.conv_status(sid)}, ensure_ascii=False).encode())
         elif p == "/api/subjects":
             # 과목 캡슐용: 과목 목록(최근순) + 이 세션 날짜의 주차·요일
             q = dict(x.split("=", 1) for x in self.path.split("?", 1)[1].split("&")
@@ -316,6 +320,13 @@ class Handler(BaseHTTPRequestHandler):
             sid = pathlib.Path(str(body.get("id", ""))).name
             self._send(json.dumps(self._import_start(sid, path), ensure_ascii=False).encode())
             return
+        if self.path == "/api/session/import_md":
+            # 다른 사람이 내려받은 번역본(.md) → 새 세션 (설정 → 불러오기)
+            sid, err = eng.import_transcript(str(body.get("name", "")), str(body.get("text", "")))
+            meta = read_meta(sid) if sid else {}
+            self._send(json.dumps({"ok": bool(sid), "id": sid, "error": err,
+                                   "title": meta.get("title", "")}, ensure_ascii=False).encode())
+            return
         if self.path == "/api/course":
             ok, err = ENGINE.start_course(body.get("subject", ""))
             self._send(json.dumps({"ok": ok, "error": err}, ensure_ascii=False).encode())
@@ -406,16 +417,31 @@ class Handler(BaseHTTPRequestHandler):
                     meta, copied = set_subject(sid, guess)
             elif saved:
                 copied = eng.file_materials(d, meta, saved)
-            conv = eng.conv_status(sid)
+            conv, digesting = eng.conv_status(sid), False
             if saved:   # 상세 텍스트 변환은 오래 걸리니 백그라운드(빠른 맥락 정리와 병렬) — 다듬기·요약이 기다렸다 쓴다
                 threading.Thread(target=eng.convert_ctx, args=(d,), daemon=True).start()
                 if not conv.get("busy"):
                     conv = {"busy": True, "note": "강의자료 변환 준비 중…", "error": ""}
+                # 녹음 중에 넣은 자료는 곧바로 받아쓰기 프롬프트·번역 맥락에도 반영한다
+                if ENGINE.sid == sid and ENGINE.state in ("starting", "recording", "paused"):
+                    digesting = ENGINE.start_ctx_digest(sid)
             self._send(json.dumps({"ok": True, "saved": saved, "skipped": skipped,
                                    "files": ctx_files(sid), "info": ctx_info(sid), "conv": conv,
-                                   "guess": guess,
+                                   "guess": guess, "digesting": digesting,
                                    "subject": eng.subject_of(meta), "title": meta.get("title", ""),
                                    "copied": copied}, ensure_ascii=False).encode())
+        elif self.path == "/api/session/ctx_convert":
+            # 아직 텍스트로 안 바뀐 자료를 다시 변환 (앱이 꺼졌다 켜졌거나 변환이 실패했을 때)
+            sid = pathlib.Path(str(body.get("id", ""))).name
+            d = eng.TR / sid
+            if not sid or not d.is_dir():
+                self._send(b'{"ok":false,"error":"session"}', code=400); return
+            conv = eng.conv_status(sid)
+            if eng.ctx_pending(d) and not conv.get("busy"):
+                threading.Thread(target=eng.convert_ctx, args=(d,), daemon=True).start()
+                conv = {"busy": True, "note": "강의자료 변환 준비 중…", "error": ""}
+            self._send(json.dumps({"ok": True, "conv": conv, "info": ctx_info(sid)},
+                                  ensure_ascii=False).encode())
         elif self.path == "/api/session/ctx_remove":
             # 자료 하나 빼기: ctx/<name> 과 변환본. 자료 폴더에 복사한 파일은 그대로 둔다
             sid = pathlib.Path(str(body.get("id", ""))).name
@@ -440,21 +466,29 @@ class Handler(BaseHTTPRequestHandler):
             d = eng.TR / sid
             if not sid or not d.is_dir():
                 self._send(b'{"ok":false,"error":"session"}', code=400); return
-            m = d / "meta.json"
-            try:
-                meta = json.loads(m.read_text())
-            except Exception:
-                meta = {"id": sid}
+            # 정리를 기다리지 않고 녹음을 시작해도 된다: 끝나면 meta 를 다시 읽어 context 만 바꾸고
+            # (미리 읽어 둔 meta 로 덮으면 녹음 시작이 쓴 state·제목이 날아간다), 녹음 중이면
+            # 곧바로 받아쓰기 프롬프트·번역 맥락에 반영한다
             src = str(body.get("text", "")).strip()
-            # 메모가 비었으면(이미 영어로 정리된 뒤 자료만 추가한 경우) 원래 메모를 다시 넣어 내용 유실 방지
-            note, err = eng.digest_context(d, src or meta.get("context_src", ""))
-            if note is None:
-                self._send(json.dumps({"ok": False, "error": err}, ensure_ascii=False).encode()); return
-            meta["context"] = note
-            if src:
-                meta["context_src"] = src[:4000]  # 원래 메모(한국어) 보존
-            m.write_text(json.dumps(meta, ensure_ascii=False))
-            self._send(json.dumps({"ok": True, "context": note}, ensure_ascii=False).encode())
+            if src:   # 원래 메모(한국어) 보존 — 녹음 중 자료를 더 넣었을 때의 재정리도 이걸 쓴다
+                eng.update_meta(d, context_src=src[:4000])
+            live = False
+            for _ in range(3):
+                before = ctx_files(sid)
+                # 메모가 비었으면(이미 영어로 정리된 뒤 자료만 추가한 경우) 원래 메모를 다시 넣어 내용 유실 방지
+                note, err = eng.digest_context(d, src or read_meta(sid).get("context_src", ""))
+                if note is None:
+                    self._send(json.dumps({"ok": False, "error": err}, ensure_ascii=False).encode()); return
+                eng.update_meta(d, context=note)
+                live = ENGINE.refresh_context(sid)
+                if ctx_files(sid) == before:
+                    break
+                # 정리하는 사이 자료가 더 들어왔다 → 전부 넣어 다시. 녹음 중이면 엔진의 재정리에 맡긴다
+                if live:
+                    ENGINE.start_ctx_digest(sid)
+                    break
+            self._send(json.dumps({"ok": True, "context": note, "live": live},
+                                  ensure_ascii=False).encode())
         elif self.path == "/api/session/polish":
             sid = pathlib.Path(str(body.get("id", ""))).name
             ok, err = ENGINE.start_polish(sid)

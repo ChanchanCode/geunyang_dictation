@@ -11,3 +11,4 @@ dist/
 *.pyc
 .DS_Store
 .codex/
+.bin/

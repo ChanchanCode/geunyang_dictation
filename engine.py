@@ -20,7 +20,7 @@ for _n in ("whisperlivekit",):
 ROOT = pathlib.Path(__file__).resolve().parent
 TR = ROOT / "transcripts"
 CONFIG = ROOT / "config.json"
-VERSION = "1.3.0"          # release.sh 가 여기를 올린다
+VERSION = "1.4.0"          # release.sh 가 여기를 올린다
 UPDATE_REPO = "ChanchanCode/geunyang_dictation"
 MODEL = "mlx-community/whisper-large-v3-turbo"
 SR = 16000
@@ -37,6 +37,8 @@ AGY_TURNS_MAX = 12
 AGY_RETRY_WAIT = (10, 30, 60)  # 다듬기·요약: 인터넷은 되는데 답이 없을 때 다시 시도 간격(초)
 NET_WAIT_MAX = 1800     # 인터넷이 끊기면 이만큼(초) 기다렸다 이어서 한다. 넘으면 멈추고 '다시 시도'
 JOB_RESUME_MAX = 2      # 앱이 꺼져 끊긴 다듬기·요약을 다음 실행 때 자동으로 이어 하는 최대 횟수
+JOB_MAX = 3             # 동시에 돌릴 수 있는 다듬기·요약 수 (더 늘리면 Gemini 쪽에서 막는다)
+JOB_NAME = {"polish": "다듬기", "summary": "요약"}
 CTX_MAX = 1200           # 세션 맥락(meta.context) 최대 길이
 CTX_FILE_EXT = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".txt", ".md"}
 CTX_FILES_MAX_MB = 60
@@ -56,6 +58,40 @@ MAJOR_LANGS = [("en", "영어"), ("ko", "한국어"), ("ja", "일본어"), ("zh"
                ("vi", "베트남어"), ("id", "인도네시아어")]
 LANG_CODES = [c for c, _ in MAJOR_LANGS]
 DEFAULT_LANGS = ["en", "ko"]
+# 라이브 parakeet-tdt-0.6b-v3 는 유럽 25개 언어만 안다. 고른 언어가 전부 이 밖이면(한국어만 등)
+# parakeet 은 한국어 말소리를 영어·러시아어 따위로 찍으므로 라이브도 Whisper 로 한다.
+PARAKEET_LANGS = {"en", "es", "fr", "de", "ru", "pt", "it"}
+
+def live_engine(langs):
+    return "parakeet" if set(norm_langs(langs) or DEFAULT_LANGS) & PARAKEET_LANGS else "whisper"
+
+def free_live_whisper():
+    """메인 프로세스(라이브)에 올린 Whisper 가중치를 놓는다. 확정 워커는 별도 프로세스라 무관."""
+    m = sys.modules.get("mlx_whisper.transcribe")
+    if m is not None:
+        m.ModelHolder.model = None; m.ModelHolder.model_path = None
+
+# ---------- 시스템 소리 입력 (Zoom 등) ----------
+SYS_INPUT = "__system__"    # 설정 input 값 — 마이크 대신 시스템 소리 (viewer.html 도 같은 값을 쓴다)
+SYSCAP_SRC = ROOT / "syscap.swift"
+SYSCAP_BIN = ROOT / ".bin" / "syscap"
+SYS_DEAD = ("시스템 소리 녹음이 멈췄어요 — 시스템 설정 › 개인정보 보호 및 보안 › 화면 및 시스템 오디오 녹음에서 "
+            "'그냥 받아쓰기'를 켠 뒤 앱을 다시 실행해 주세요")
+
+def ensure_syscap():
+    """시스템 소리 헬퍼 경로. 없거나 소스보다 오래됐으면 swiftc 로 컴파일한다. (path, err)"""
+    try:
+        if SYSCAP_BIN.exists() and SYSCAP_BIN.stat().st_mtime >= SYSCAP_SRC.stat().st_mtime:
+            return str(SYSCAP_BIN), ""
+        SYSCAP_BIN.parent.mkdir(exist_ok=True)
+        r = subprocess.run(["xcrun", "swiftc", "-O", "-swift-version", "5", str(SYSCAP_SRC),
+                            "-o", str(SYSCAP_BIN)], capture_output=True, text=True, timeout=300)
+    except Exception as e:
+        return None, f"시스템 소리 도구를 만들지 못했어요: {e}"[:120]
+    if r.returncode != 0:
+        logging.error("syscap 컴파일 실패: %s", r.stderr[-2000:])
+        return None, "시스템 소리 도구를 만들지 못했어요 (Xcode 명령줄 도구 필요: xcode-select --install)"
+    return str(SYSCAP_BIN), ""
 
 def norm_langs(val):
     """허용 코드만 남기고 MAJOR_LANGS 순서로 정렬·중복 제거. 비면 None."""
@@ -370,17 +406,20 @@ when helpful. Output exactly one line per input item, in the form "N. 번역문"
 No other text. Never call tools other than send_message.
 """
 
+_agent_lock = threading.Lock()
+
 def ensure_agent():
-    homes = [pathlib.Path.home()]
-    alias = load_cfg().get("agy_account", "main")
-    if alias != "main" and acct_home(alias).is_dir():
-        homes.append(acct_home(alias))
-    for h in homes:
-        d = h / ".gemini/config/agents/scribe"
-        d.mkdir(parents=True, exist_ok=True)
-        f = d / "agent.md"
-        if not f.exists() or f.read_text() != AGENT_MD:
-            f.write_text(AGENT_MD)
+    with _agent_lock:   # 여러 작업이 나란히 agy 를 띄울 때 같은 파일을 겹쳐 쓰지 않게
+        homes = [pathlib.Path.home()]
+        alias = load_cfg().get("agy_account", "main")
+        if alias != "main" and acct_home(alias).is_dir():
+            homes.append(acct_home(alias))
+        for h in homes:
+            d = h / ".gemini/config/agents/scribe"
+            d.mkdir(parents=True, exist_ok=True)
+            f = d / "agent.md"
+            if not f.exists() or f.read_text() != AGENT_MD:
+                f.write_text(AGENT_MD)
 
 
 DIGEST_PROMPT = """You prepare a short ENGLISH context note for a speech recognizer (Whisper) and a
@@ -513,31 +552,39 @@ def convert_one(sess, name):
 
 def convert_ctx(sess, note=None):
     """미변환 자료를 순차 변환. note(msg) 로 진행 표시. 실패한 이름 목록 반환.
-    다른 스레드가 이미 변환 중이면 곧바로 [] (호출자는 wait_conv 로 기다린다)."""
+    다른 스레드가 이미 변환 중이면 곧바로 [] (그 스레드가 새로 올라온 자료까지 이어서 한다 —
+    호출자는 wait_conv 로 기다린다). 녹음 중에 자료를 더 올려도 빠짐없이 변환된다."""
     sid = sess.name
-    pend = ctx_pending(sess)
-    if not pend:
-        return []
-    with _conv_lock:
-        if _conv.get(sid, {}).get("busy"):
+    with _conv_lock:   # busy 판정과 남은 목록 확인을 한 자물쇠 안에서 — 끝나는 찰나에 올린 자료도 안 샌다
+        if _conv.get(sid, {}).get("busy") or not ctx_pending(sess):
             return []
         _conv[sid] = {"busy": True, "note": "강의자료 변환 준비 중…", "error": ""}
-    failed = []
-    try:
-        for k, name in enumerate(pend):
-            msg = f"강의자료 변환 중… ({k + 1}/{len(pend)}) {name}"
-            _conv[sid]["note"] = msg
-            if note:
-                note(msg)
-            try:
-                if not convert_one(sess, name):
-                    failed.append(name)
-            except Exception:
-                logging.exception("자료 변환 실패")
-                failed.append(name)
-    finally:
+    failed, done = [], False
+
+    def finish():
         _conv[sid] = {"busy": False, "note": "",
                       "error": (f"자료 변환 실패: {', '.join(failed)}"[:120] if failed else "")}
+    try:
+        while not done:
+            with _conv_lock:
+                # 도는 동안 올라온 자료도 같은 스레드가 이어서 한다 (실패한 건 다시 잡지 않는다)
+                pend = [n for n in ctx_pending(sess) if n not in failed]
+                if not pend:
+                    finish(); done = True; continue
+            for k, name in enumerate(pend):
+                msg = f"강의자료 변환 중… ({k + 1}/{len(pend)}) {name}"
+                _conv[sid]["note"] = msg
+                if note:
+                    note(msg)
+                try:
+                    if not convert_one(sess, name):
+                        failed.append(name)
+                except Exception:
+                    logging.exception("자료 변환 실패")
+                    failed.append(name)
+    finally:
+        if not done:   # 예외로 빠져나온 경우에도 busy 를 반드시 내린다
+            finish()
     return failed
 
 def wait_conv(sid, timeout=900):
@@ -1128,6 +1175,10 @@ class Engine:
         threading.Thread(target=self._fix_worker, daemon=True).start()
         threading.Thread(target=self._translator, daemon=True).start()
         self._pk = None   # parakeet-mlx 라이브 모델 (프로세스당 1회 로드)
+        self._live_kind = None   # 지금 도는 라이브 층: "parakeet" | "whisper"
+        self._live_pend = {}     # whisper 라이브: 잘린 발화의 초안 {at: text} — 확정 라인이 나오면 지운다
+        self._live_gen = 0       # 발화가 잘릴 때마다 +1 (그 전 오디오로 만든 초안은 버린다)
+        self._reinput = False    # 녹음 중 입력(마이크/시스템 소리)을 바꿨다 → 캡처 프로세스만 갈아 끼운다
         self._liveq = None       # 녹음 중일 때만: 라이브 층에 오디오를 넘기는 큐
         self._live_stop = None
         self._session_task = None
@@ -1136,9 +1187,12 @@ class Engine:
         self._abort = False
         self._ctx = ""
         self._edited = False     # 사용자가 라인을 지우거나 고쳤나 (전부 지운 세션 저장 판단용)
-        self.polish = {"sid": None, "busy": False, "note": "", "error": ""}
-        self.summary = {"sid": None, "busy": False, "note": "", "error": ""}
+        # 다듬기·요약은 세션마다 하나씩, 전체 JOB_MAX 개까지 동시에 돈다
+        self.jobs = {}           # sid -> {"sid","kind","busy","note","error"}
+        self._jobs_lock = threading.Lock()
         self.course = {"subject": "", "busy": False, "note": "", "error": ""}
+        self.ctxjob = {"sid": None, "busy": False, "note": "", "error": ""}   # 자료 추가 → 맥락 재정리
+        self._ctx_again = False  # 맥락 정리가 도는 중에 자료를 더 올렸나
         self._flush_translate = threading.Event()
         self._src = None         # 파일 가져오기 중이면 그 경로 (마이크 대신)
         self._src_tmp = False    # 업로드로 받은 임시 파일이면 끝난 뒤 지운다
@@ -1216,16 +1270,13 @@ class Engine:
         elif (sess / "transcript.md").exists():  # 구형 세션 — md 에서 복원
             try:
                 md_txt = (sess / "transcript.md").read_text()
-                prev = [{"i": k, "t": m.group(1), "a": 0.0, "text": m.group(2),
-                         "lang": "en", "ko": (m.group(3) or "").strip(),
-                         "at": time.time()}
-                        for k, m in enumerate(re.finditer(
-                            r"\*\*(\d\d:\d\d:\d\d)\*\* (.+)(?:\n> (.+))?", md_txt))]
+                prev = [dict(l, i=k, a=0.0, lang="en", at=time.time())
+                        for k, l in enumerate(md_lines(md_txt))]
             except Exception:
                 prev = []
         with self.lock:
             self.sid = sid; self.lines = prev; self.live = []; self.live_buffer = ""
-            self._live_text = ""; self._live_cut = (0, 0)
+            self._live_text = ""; self._live_cut = (0, 0); self._live_pend = {}
             self._live_base = max((l.get("i", -1) for l in prev), default=-1) + 1
             self._edited = False
             self.fixed_end = 0.0; self.error = ""; self.trans_note = ""
@@ -1286,6 +1337,7 @@ class Engine:
             else:
                 wall = (datetime.datetime.now()
                         - datetime.timedelta(seconds=max(0.0, seg.pos - at))).strftime("%H:%M:%S")
+            self._live_mark(at)
             self.fixq.put((sid, sess, audio, at, dur, wall, self._wprompt, part))
         seg = Segmenter(on_utt)
 
@@ -1310,36 +1362,49 @@ class Engine:
                     while pause.is_set() and not stop.is_set():
                         await asyncio.sleep(0.2)
                     continue
+                self._reinput = False
+                dead = "ffmpeg 종료(마이크 권한?)"
                 if src:
                     inp = ["-i", src, "-vn"]
                 elif os.environ.get("GY_INPUT"):
                     inp = ["-re", "-i", os.environ["GY_INPUT"]]
+                elif self.cfg.get("input") == SYS_INPUT:
+                    inp = None
                 else:
                     arg = await asyncio.get_event_loop().run_in_executor(
                         None, input_arg, self.cfg.get("input", ""))
                     inp = ["-f", "avfoundation", "-i", arg]
+                if inp is None:   # 시스템 소리 — 헬퍼가 ffmpeg 과 같은 s16le 16k mono 를 낸다
+                    exe, err = await asyncio.get_event_loop().run_in_executor(None, ensure_syscap)
+                    if not exe:
+                        with self.lock:
+                            self.error = err
+                        stop.set(); break
+                    cmd, dead = [exe], SYS_DEAD
+                else:
+                    cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", *inp,
+                           "-ac", "1", "-ar", str(SR), "-f", "s16le", "pipe:1"]
                 proc = await asyncio.create_subprocess_exec(
-                    FFMPEG, "-hide_banner", "-loglevel", "error", *inp,
-                    "-ac", "1", "-ar", str(SR), "-f", "s16le", "pipe:1",
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
                     stdin=asyncio.subprocess.DEVNULL)
                 try:
-                    while not stop.is_set() and not pause.is_set():
+                    while not stop.is_set() and not pause.is_set() and not self._reinput:
                         if src and self.fixq.qsize() > 6:   # 전사가 따라올 때까지 읽기를 멈춘다 (메모리)
                             await asyncio.sleep(0.2); continue
                         try:
                             chunk = await asyncio.wait_for(proc.stdout.read(SR // 5 * 2), timeout=2)
                         except asyncio.TimeoutError:
                             if proc.returncode is not None:
-                                raise IOError("ffmpeg 종료(마이크 권한?)")
+                                raise IOError(dead)
                             continue
                         if not chunk:
                             if src:
                                 eof = True; stop.set(); break
-                            raise IOError("ffmpeg 종료(마이크 권한?)")
+                            raise IOError(dead)
                         pcm_f.write(chunk)
                         chunk_f = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
-                        if not live_stop.is_set():
+                        ls = self._live_stop   # 녹음 중 라이브를 껐다 켜면 새 Event 로 바뀐다
+                        if ls is not None and not ls.is_set():
                             liveq.put(chunk_f)
                         seg.feed(chunk_f)
                 except IOError as e:
@@ -1360,6 +1425,8 @@ class Engine:
             seg.flush()
             pcm_f.close()
             live_stop.set()
+            if self._live_stop is not None:
+                self._live_stop.set()
             self._liveq = None
             if caff:
                 caff.terminate()
@@ -1384,11 +1451,97 @@ class Engine:
                     pass
             with self.lock:
                 self.state = "idle"; self.live = []; self.live_buffer = ""; self._live_text = ""
+                self._live_pend = {}
                 self._src = None; self._src_tmp = False; self._imp = None
             self.bump()
 
-    # -- 라이브 미리보기 (parakeet-mlx 스트리밍, 스레드) — 확정 층과 독립
+    # -- 라이브 미리보기 (스레드) — 확정 층과 독립. 고른 언어에 parakeet 이 아는 언어가 있으면
+    #    parakeet 스트리밍, 없으면(한국어만 등) Whisper 로 지금 말하는 발화를 1초마다 다시 받아쓴다
     def _live_loop(self, q, stop_evt):
+        kind = live_engine(self.cfg.get("langs"))
+        with self.lock:
+            self._live_kind = kind; self._live_text = ""; self._live_pend = {}; self.rev += 1
+        if kind == "whisper":
+            self._pk = None          # 안 쓰는 parakeet 가중치는 놓는다
+            self._live_whisper(q, stop_evt)
+        else:
+            free_live_whisper()
+            self._live_parakeet(q, stop_evt)
+
+    def _live_whisper(self, q, stop_evt):
+        """버퍼 = 마지막 컷 이후 오디오(지금 말하는 발화). 확정 층이 발화를 자르면 큐에 None 이 온다."""
+        try:
+            import mlx_whisper
+        except Exception:
+            logging.exception("라이브 모델 로드 실패 — 미리보기 없이 진행")
+            return
+        langs = norm_langs(self.cfg.get("langs")) or DEFAULT_LANGS
+        lang = langs[0] if len(langs) == 1 else None
+        F = Segmenter.FRAME
+        buf, last_n, t_dec = np.zeros(0, dtype=np.float32), 0, 0.0
+        while not stop_evt.is_set():
+            try:
+                items = [q.get(timeout=0.3)]
+            except queue.Empty:
+                continue
+            try:                      # 밀린 오디오는 한 번에 받는다 (디코딩이 느려도 현재를 따라간다)
+                while True:
+                    items.append(q.get_nowait())
+            except queue.Empty:
+                pass
+            for c in items:
+                if c is None:         # 발화 컷 → 다음 발화부터 새로
+                    buf, last_n = np.zeros(0, dtype=np.float32), 0
+                else:
+                    buf = np.concatenate([buf, c])[-SR * 30:]
+            if len(buf) - last_n < SR // 2 or time.time() - t_dec < 0.8:
+                continue
+            rms = np.sqrt(np.mean(buf[:len(buf) // F * F].reshape(-1, F) ** 2, axis=1))
+            on = np.nonzero(rms >= Segmenter.GATE)[0]
+            if not len(on):           # 아직 말소리가 없다 — 무음을 넣으면 환각("감사합니다")만 나온다
+                continue
+            audio = buf[max(0, on[0] - Segmenter.PRE_ROLL) * F:]
+            gen, last_n, t_dec = self._live_gen, len(buf), time.time()
+            try:
+                r = mlx_whisper.transcribe(audio, path_or_hf_repo=MODEL, language=lang, temperature=0.0,
+                                           condition_on_previous_text=False,
+                                           initial_prompt=getattr(self, "_wprompt", "") or None)
+            except Exception:
+                logging.exception("라이브 Whisper 실패")
+                continue
+            text = " ".join(s["text"].strip() for s in r["segments"]
+                            if s.get("no_speech_prob", 0) < 0.6
+                            and s.get("compression_ratio", 0) < 2.4 and s["text"].strip())
+            if text.lower() in JUNK:
+                text = ""
+            with self.lock:
+                if gen == self._live_gen:   # 디코딩하는 사이 컷됐으면 지난 발화 초안이라 버린다
+                    self._live_text = text
+                    self.rev += 1
+
+    def _live_mark(self, at):
+        """확정 층이 발화를 잘랐다(on_utt). whisper 라이브면 그 발화 초안을 확정 라인이 나올 때까지
+        _live_pend 로 옮기고, 라이브 버퍼를 비우라는 표시(None)를 큐에 넣는다."""
+        ls, q = self._live_stop, self._liveq
+        if self._live_kind != "whisper" or ls is None or ls.is_set() or q is None:
+            return
+        with self.lock:
+            self._live_gen += 1
+            if self._live_text:
+                self._live_pend[at] = self._live_text
+            self._live_text = ""; self.rev += 1
+        q.put(None)
+
+    def _restart_live(self):
+        """녹음 중 라이브 층을 새로 띄운다 (끄기→켜기, 사용 언어 변경)."""
+        if self._liveq is None or self.state not in ("recording", "paused"):
+            return
+        if self._live_stop is not None:
+            self._live_stop.set()
+        self._live_stop = threading.Event()
+        threading.Thread(target=self._live_loop, args=(self._liveq, self._live_stop), daemon=True).start()
+
+    def _live_parakeet(self, q, stop_evt):
         _br = re.compile(r"\[\s*[A-Za-z_ ]{0,24}(\]|$)")
         try:
             import mlx.core as mx
@@ -1405,6 +1558,8 @@ class Engine:
                     try:
                         c = q.get(timeout=0.3)
                     except queue.Empty:
+                        continue
+                    if c is None:       # whisper 라이브용 발화 컷 표시
                         continue
                     if q.qsize() > 80:  # 16초 이상 밀리면 사이를 버리고 현재로 점프
                         try:
@@ -1443,6 +1598,10 @@ class Engine:
                 imp = self._imp
                 if imp is not None and sid == self.sid:
                     imp["done"] = round(at + dur, 1)
+                if self._live_pend:      # 빈 결과로 끝난 발화의 라이브 초안도 치운다
+                    with self.lock:
+                        if self._live_pend.pop(at, None) is not None:
+                            self.rev += 1
                 self.fixq.task_done()
 
     def _autosave(self, sess, force=False):
@@ -1476,6 +1635,7 @@ class Engine:
                 if active:
                     line["i"] = max((l.get("i", -1) for l in self.lines), default=-1) + 1
                     self.lines.append(line)
+                    self._live_pend.pop(at, None)   # 확정 라인이 그 발화의 라이브 초안을 대신한다
                     self.fixed_end = at + dur
                     if self.error.startswith("확정 전사"):
                         self.error = ""
@@ -1564,38 +1724,136 @@ class Engine:
         write_json_atomic(sess / "meta.json", meta)
         self.fix.stop()  # 워커 메모리 반납 — 다음 세션 시작 때 다시 띄운다
 
-    # -- 전체 문맥 다듬기 (원문 교정 + 번역). 종료 후 버튼으로 실행.
-    def start_polish(self, sid, tries=0):
-        """tries>0 은 앱이 꺼져 끊긴 작업을 다음 실행 때 자동으로 이어 하는 경우."""
-        sess = TR / sid
-        if not (sess / "lines.json").exists():
-            return False, "다듬을 내용이 없어요"
-        if self.state != "idle":
-            return False, "녹음이 끝난 뒤에 다듬을 수 있어요"
-        if self.polish["busy"] or self.summary["busy"] or self.course["busy"]:
-            return False, "이미 작업 중이에요"
-        if not Agy(str(ROOT / ".agywork")).available():
-            return False, "agy(Antigravity CLI)가 없어 다듬기를 못 해요"
-        self.polish = {"sid": sid, "busy": True, "error": "",
-                       "note": "끊긴 다듬기를 이어서 하는 중…" if tries else "준비 중…"}
-        update_meta(sess, job="polish", job_tries=tries)   # 앱이 꺼져도 다음 실행 때 이어 하도록 표시
+    # -- 녹음 중 강의자료 추가: 맥락 노트를 다시 만들고 Whisper 프롬프트·번역 맥락을 갈아끼운다
+    def refresh_context(self, sid):
+        """meta.context 를 다시 읽어 Whisper initial_prompt·번역 맥락에 반영한다.
+        _wprompt 는 발화마다, _ctx 는 번역 배치마다 읽으니 녹음 중에 바꿔도 바로 먹는다."""
+        if self.sid != sid or self.state not in ("starting", "recording", "paused"):
+            return False
+        try:
+            meta = json.loads((TR / sid / "meta.json").read_text())
+        except Exception:
+            return False
+        ctx = (meta.get("context") or "").strip()[:CTX_MAX]
+        terms = subject_terms_text(meta, sid, 900)
+        self._wprompt = whisper_prompt(ctx, extra=terms)
+        self._ctx = (ctx + "\nCourse terms: " + terms[:400]).strip() if terms else ctx
         self.bump()
-        threading.Thread(target=self._polish_job, args=(sid, sess), daemon=True).start()
+        return True
+
+    def start_ctx_digest(self, sid):
+        """자료를 새로 올린 뒤 영어 맥락 노트를 다시 만든다(백그라운드).
+        녹음 중이면 끝나는 대로 받아쓰기 프롬프트·번역 맥락에 반영한다.
+        도는 중에 자료를 더 올리면 끝나고 한 번 더 돈다(마지막 자료까지 반영되도록)."""
+        sess = TR / sid
+        if not sess.is_dir() or not Agy(str(ROOT / ".agywork")).available():
+            return False
+        with self.lock:
+            if self.ctxjob.get("busy"):
+                if self.ctxjob.get("sid") != sid:
+                    return False
+                self._ctx_again = True
+                return True
+            self._ctx_again = False
+            self.ctxjob = {"sid": sid, "busy": True, "note": "새 자료로 맥락 정리 중…", "error": ""}
+        self.bump()
+        threading.Thread(target=self._ctx_digest_job, args=(sid, sess), daemon=True).start()
+        return True
+
+    def _ctx_digest_job(self, sid, sess):
+        done = {"sid": sid, "busy": False, "note": "", "error": ""}
+        try:
+            for _ in range(3):
+                self._ctx_again = False
+                try:
+                    meta = json.loads((sess / "meta.json").read_text())
+                except Exception:
+                    meta = {}
+                # 원래 한국어 메모를 같이 넘겨, 자료만 추가했을 때 메모 내용이 사라지지 않게 한다
+                note, err = digest_context(sess, (meta.get("context_src") or "").strip())
+                if note is None:
+                    done["error"] = err
+                    break
+                update_meta(sess, context=note)
+                live = self.refresh_context(sid)
+                done["note"] = ("새 자료를 받아쓰기·번역에 반영했어요" if live
+                                else "새 자료로 맥락을 정리했어요")
+                if not self._ctx_again:
+                    break
+        except Exception as e:
+            logging.exception("맥락 정리 실패")
+            done = {"sid": sid, "busy": False, "note": "", "error": f"맥락 정리 실패: {e}"[:140]}
+        self.ctxjob = done
+        self.bump()
+
+    # -- 전체 문맥 다듬기 (원문 교정 + 번역). 종료 후 버튼으로 실행.
+    def busy_jobs(self):
+        with self._jobs_lock:
+            return [dict(j) for j in self.jobs.values() if j.get("busy")]
+
+    def _job_set(self, sid, **kw):
+        with self._jobs_lock:
+            j = dict(self.jobs.get(sid) or {"sid": sid, "kind": "", "busy": False,
+                                            "note": "", "error": ""})
+            j.update(kw)
+            self.jobs[sid] = j
+        self.bump()
+
+    def start_polish(self, sid, tries=0):
+        return self._start_job("polish", sid, tries)
+
+    def start_summary(self, sid, tries=0):
+        return self._start_job("summary", sid, tries)
+
+    def _start_job(self, kind, sid, tries=0):
+        """다듬기·요약 시작. 강의마다 하나씩, 서로 다른 강의는 JOB_MAX 개까지 같이 돈다.
+        tries>0 은 앱이 꺼져 끊긴 작업을 다음 실행 때 자동으로 이어 하는 경우."""
+        sess, name = TR / sid, JOB_NAME[kind]
+        if not (sess / "lines.json").exists():
+            return False, f"{name}할 내용이 없어요"
+        if self.state != "idle":
+            return False, f"녹음이 끝난 뒤에 {name}할 수 있어요"
+        if self.course["busy"]:
+            return False, "과목 정리본을 만드는 중이에요"
+        if not Agy(str(ROOT / ".agywork")).available():
+            return False, f"agy(Antigravity CLI)가 없어 {name}를 못 해요"
+        with self._jobs_lock:
+            if (self.jobs.get(sid) or {}).get("busy"):
+                return False, "이 강의는 이미 하는 중이에요"
+            if sum(1 for j in self.jobs.values() if j.get("busy")) >= JOB_MAX:
+                return False, (f"한 번에 {JOB_MAX}개까지 할 수 있어요 — "
+                               "하나 끝나면 눌러 주세요 (Gemini 가 막아요)")
+            self.jobs[sid] = {"sid": sid, "kind": kind, "busy": True, "error": "",
+                              "note": f"끊긴 {name}를 이어서 하는 중…" if tries else "준비 중…"}
+        update_meta(sess, job=kind, job_tries=tries)   # 앱이 꺼져도 다음 실행 때 이어 하도록 표시
+        self.bump()
+        threading.Thread(target=self._job, args=(kind, sid, sess), daemon=True).start()
         return True, ""
 
-    def _polish_job(self, sid, sess):
+    def _job(self, kind, sid, sess):
+        """세션 하나의 다듬기(또는 다듬기+요약). 다른 세션 작업과 나란히 돈다 —
+        건드리는 파일이 세션 폴더 안이고 agy 는 호출마다 따로 띄우니 서로 섞이지 않는다."""
         def note(t):
-            self.polish = {"sid": sid, "busy": True, "note": t, "error": ""}
-            self.bump()
+            self._job_set(sid, kind=kind, busy=True, note=t, error="")
         try:
-            skipped = self._polish_core(sid, sess, note)
-            self.polish = {"sid": sid, "busy": False, "error": "",
-                           "note": "다듬기 완료" + (f" ({skipped}구간은 응답이 없어 원문 유지)" if skipped else "")}
+            if kind == "polish":
+                skipped = self._polish_core(sid, sess, note)
+                msg = "다듬기 완료" + (f" ({skipped}구간은 응답이 없어 원문 유지)" if skipped else "")
+            else:
+                self._summary_core(sid, sess, note)
+                msg = "다듬기·요약 완료"
+            self._job_set(sid, kind=kind, busy=False, note=msg, error="")
         except Exception as e:
-            logging.exception("다듬기 실패")
-            self.polish = {"sid": sid, "busy": False, "note": "", "error": f"다듬기 실패: {e}"[:140]}
+            logging.exception("%s 실패: %s", JOB_NAME[kind], sid)
+            step = JOB_NAME[kind]
+            if kind == "summary":   # 다듬기 단계에서 멈춘 건지 요약 단계에서 멈춘 건지 그대로 알린다
+                try:
+                    step = "요약" if json.loads((sess / "meta.json").read_text()).get("polished") \
+                        else "다듬기"
+                except Exception:
+                    pass
+            self._job_set(sid, kind=kind, busy=False, note="", error=f"{step} 실패: {e}"[:140])
         update_meta(sess, job=None, job_tries=None)   # 실패는 자동으로 다시 하지 않는다 — 버튼으로 이어서
-        self.bump()
 
     def _polish_core(self, sid, sess, note):
         """전체 문맥 다듬기 본체. 자료가 아직 텍스트로 안 바뀌었으면 먼저 변환해 참고한다.
@@ -1702,36 +1960,6 @@ class Engine:
             note(label)
 
     # -- 강의 요약·정리본 (자료 변환 → 필요하면 다듬기 → Gemini 한 턴). 종료 후 버튼으로 실행.
-    def start_summary(self, sid, tries=0):
-        sess = TR / sid
-        if not (sess / "lines.json").exists():
-            return False, "요약할 내용이 없어요"
-        if self.state != "idle":
-            return False, "녹음이 끝난 뒤에 요약할 수 있어요"
-        if self.polish["busy"] or self.summary["busy"] or self.course["busy"]:
-            return False, "이미 작업 중이에요"
-        if not Agy(str(ROOT / ".agywork")).available():
-            return False, "agy(Antigravity CLI)가 없어 요약을 못 해요"
-        self.summary = {"sid": sid, "busy": True, "error": "",
-                        "note": "끊긴 요약을 이어서 하는 중…" if tries else "준비 중…"}
-        update_meta(sess, job="summary", job_tries=tries)
-        self.bump()
-        threading.Thread(target=self._summary_job, args=(sid, sess), daemon=True).start()
-        return True, ""
-
-    def _summary_job(self, sid, sess):
-        def note(t):
-            self.summary = {"sid": sid, "busy": True, "note": t, "error": ""}
-            self.bump()
-        try:
-            self._summary_core(sid, sess, note)
-            self.summary = {"sid": sid, "busy": False, "note": "요약 완료", "error": ""}
-        except Exception as e:
-            logging.exception("요약 실패")
-            self.summary = {"sid": sid, "busy": False, "note": "", "error": f"요약 실패: {e}"[:140]}
-        update_meta(sess, job=None, job_tries=None)
-        self.bump()
-
     def _summary_core(self, sid, sess, note):
         """자료 변환 → (필요하면) 다듬기 → 요약. 실패는 예외로."""
         self._wait_online(note, "요약")
@@ -1781,8 +2009,10 @@ class Engine:
         subject = " ".join(str(subject or "").split())[:40]
         if not subject:
             return False, "과목이 없어요"
-        if self.polish["busy"] or self.summary["busy"] or self.course["busy"]:
-            return False, "이미 작업 중이에요"
+        if self.course["busy"]:
+            return False, "이미 정리본을 만드는 중이에요"
+        if self.busy_jobs():
+            return False, "다듬기·요약이 끝난 뒤에 만들 수 있어요"
         if not course_sessions(subject):
             return False, "전사가 있는 강의가 없어요"
         if not Agy(str(ROOT / ".agywork")).available():
@@ -1874,17 +2104,21 @@ class Engine:
 
     # -- 조회 (HTTP용)
     def snapshot(self):
+        with self._jobs_lock:   # 진행 중인 작업이 jobs 를 바꾸는 중일 수 있다
+            jobs = {k: dict(v) for k, v in self.jobs.items()}
         with self.lock:
             return {"state": self.state, "sid": self.sid, "rev": self.rev,
                     "error": self.error, "trans": self.trans_note,
                     "translate_mode": self.cfg.get("translate"),
                     "live_mode": self.cfg.get("live", "on"),
                     "langs": self.cfg.get("langs") or DEFAULT_LANGS,
+                    "input": self.cfg.get("input", ""),
                     "lines": self.lines,
                     "live": [{"s": s, "e": e, "text": t} for s, e, t in self.live],
                     "live_buffer": self._live_tail(), "fixed_end": self.fixed_end,
-                    "polish": dict(self.polish), "summary": dict(self.summary),
-                    "course": dict(self.course), "recover": self.recover,
+                    "jobs": jobs,
+                    "course": dict(self.course), "ctxjob": dict(self.ctxjob),
+                    "recover": self.recover,
                     "import": dict(self._imp) if self._imp else None}
 
     # -- 크래시 복구: 녹음 도중 앱이 죽으면 audio.pcm 과 state=recording 이 남는다.
@@ -1914,9 +2148,10 @@ class Engine:
         self._resume_jobs()
 
     def _resume_jobs(self):
-        """앱이 꺼져 끊긴 다듬기·요약(meta.job)을 이어서 한다. 같은 작업이 JOB_RESUME_MAX 번 넘게
-        끊겼으면 자동으로 하지 않고 오류로 알린다 (버튼으로 이어서 할 수 있다)."""
-        if self.state != "idle" or self.polish["busy"] or self.summary["busy"] or self.course["busy"]:
+        """앱이 꺼져 끊긴 다듬기·요약(meta.job)을 이어서 한다. 최신 것부터 JOB_MAX 개까지 같이
+        띄우고(자리가 차면 start 가 막아 준다), 같은 작업이 JOB_RESUME_MAX 번 넘게 끊겼으면
+        자동으로 하지 않고 오류로 알린다 (버튼으로 이어서 할 수 있다)."""
+        if self.state != "idle" or self.course["busy"] or self.busy_jobs():
             return
         found = []
         for d in sorted(TR.iterdir(), reverse=True):
@@ -1925,20 +2160,20 @@ class Engine:
                     meta = json.loads((d / "meta.json").read_text())
                 except Exception:
                     continue
-                if meta.get("job") in ("polish", "summary"):
+                if meta.get("job") in JOB_NAME:
                     found.append((d, meta["job"], meta.get("job_tries", 0) + 1))
-        for k, (d, kind, tries) in enumerate(found):
-            name = "다듬기" if kind == "polish" else "요약"
-            if k == 0 and tries <= JOB_RESUME_MAX:
-                ok, err = (self.start_polish if kind == "polish" else self.start_summary)(d.name, tries=tries)
-                if ok:
-                    continue
-                logging.error("%s 이어 하기 실패: %s %s", name, d.name, err)
-            elif k == 0:
-                setattr(self, kind, {"sid": d.name, "busy": False, "note": "",
-                                     "error": f"{name} 실패: 여러 번 중단돼 멈췄어요 — 다시 시도해 주세요"})
-                self.bump()
-            update_meta(d, job=None, job_tries=None)
+        for d, kind, tries in found:
+            name = JOB_NAME[kind]
+            ok = False
+            if tries <= JOB_RESUME_MAX:
+                ok, err = self._start_job(kind, d.name, tries=tries)
+                if not ok:   # 자리가 없거나(JOB_MAX) 시작 못 함 — 표시만 지우고 버튼으로 이어 한다
+                    logging.error("%s 이어 하기 실패: %s %s", name, d.name, err)
+            else:
+                self._job_set(d.name, kind=kind, busy=False, note="",
+                              error=f"{name} 실패: 여러 번 중단돼 멈췄어요 — 다시 시도해 주세요")
+            if not ok:
+                update_meta(d, job=None, job_tries=None)
 
     def _recover(self, sess):
         with self._rec_lock:   # 이 프로세스에서 시작한 세션은 크래시 잔재가 아니다
@@ -2011,6 +2246,8 @@ class Engine:
     def _live_tail(self):
         """라이브 박스에 보일 텍스트 = 마지막 확정 라인 이후. lock 안에서 호출.
         매칭 실패(초안 구간 재디코딩으로 단어가 바뀜)하면 마지막 성공 컷을 유지한다."""
+        if self._live_kind == "whisper":   # 확정을 기다리는 발화 초안 + 지금 발화 (컷 기준이라 매칭 불필요)
+            return " ".join([*self._live_pend.values(), self._live_text]).strip()[-1500:]
         n, text = len(self.lines), self._live_text
         if not n or self.lines[-1].get("i", -1) < self._live_base:
             return text[-2000:]
@@ -2036,8 +2273,11 @@ class Engine:
                 self.cfg[key] = val
             else:
                 return
-        elif key == "input":            # 입력 장치 이름 — 빈 문자열이면 기본
-            self.cfg[key] = str(val or "").strip()[:120]
+        elif key == "input":            # 입력 장치 이름 — 빈 문자열이면 기본, SYS_INPUT 이면 시스템 소리
+            v = str(val or "").strip()[:120]
+            if v != self.cfg.get(key) and self.state == "recording" and not self._src:
+                self._reinput = True    # 녹음 중이면 캡처만 새 입력으로 다시 연다 (세션은 그대로)
+            self.cfg[key] = v
         elif key == "mat_dir":          # 자료 자동 정리 폴더 — 빈 문자열이면 끔
             v = str(val or "").strip()
             if v and not pathlib.Path(v).expanduser().is_dir():
@@ -2057,26 +2297,27 @@ class Engine:
         save_cfg(self.cfg)
         if key == "live":
             self._apply_live(val)
+        elif key == "langs" and self._live_stop is not None and not self._live_stop.is_set() \
+                and (self._live_kind == "whisper" or live_engine(self.cfg["langs"]) != self._live_kind):
+            self._restart_live()   # 녹음 중 언어를 바꾸면 라이브 층(엔진·고정 언어)도 그에 맞춘다
         self.bump()
 
     def _apply_live(self, val):
-        """라이브 층 즉시 켜기/끄기. 끄면 스트림을 닫고 parakeet 가중치(~2.3GB)를 놓는다."""
+        """라이브 층 즉시 켜기/끄기. 끄면 스트림을 닫고 라이브 가중치(parakeet ~2.3GB / Whisper)를 놓는다."""
         if val == "off":
             if self._live_stop is not None:
                 self._live_stop.set()
             with self.lock:
-                self._live_text = ""; self.live_buffer = ""; self.rev += 1
+                self._live_text = ""; self.live_buffer = ""; self._live_pend = {}; self.rev += 1
             self._pk = None
+            free_live_whisper()
             try:
                 import mlx.core as mx
                 mx.clear_cache()
             except Exception:
                 pass
-        elif self._liveq is not None and self._live_stop is not None \
-                and self._live_stop.is_set() and self.state in ("recording", "paused"):
-            self._live_stop = threading.Event()   # 녹음 중이면 그 자리에서 다시 띄운다
-            threading.Thread(target=self._live_loop,
-                             args=(self._liveq, self._live_stop), daemon=True).start()
+        elif self._live_stop is not None and self._live_stop.is_set():
+            self._restart_live()   # 녹음 중이면 그 자리에서 다시 띄운다
 
     def set_translate(self, mode):
         self.set_cfg("translate", mode)
@@ -2367,6 +2608,60 @@ def write_session(sess, lines):
     meta["n_lines"] = len(lines)
     meta["preview"] = lines[0]["text"][:80] if lines else ""
     write_json_atomic(mp, meta)
+
+
+def md_lines(md_txt):
+    """transcript.md(내려받은 번역본) → [{t, text, ko}]."""
+    return [{"t": m.group(1), "text": m.group(2), "ko": (m.group(3) or "").strip()}
+            for m in re.finditer(r"\*\*(\d\d:\d\d:\d\d)\*\* (.+)(?:\n> (.+))?", md_txt)]
+
+
+def import_transcript(name, md_txt):
+    """다른 사람이 내려받은 번역본(.md)을 새 세션으로 들인다. (sid, 에러)
+    날짜는 머리줄, 시각은 첫 줄에서 잡고 파일 이름(=제목)으로 과목을 추정한다.
+    오디오가 없으니 라인에 a 를 두지 않는다(재생 메뉴가 안 뜬다)."""
+    md_txt = (md_txt or "").replace("\r\n", "\n")
+    lines = md_lines(md_txt)
+    if not lines:
+        return "", "그냥 받아쓰기에서 내려받은 번역본(.md)만 불러올 수 있어요"
+    head = md_txt.split("\n", 1)[0].strip()
+    m = re.search(r"\d{4}-\d{2}-\d{2}", head) if head.startswith("# ") else None
+    try:
+        day = datetime.date.fromisoformat(m.group(0)) if m else datetime.date.today()
+        t0, t1 = (datetime.datetime.combine(day, datetime.time.fromisoformat(l["t"]))
+                  for l in (lines[0], lines[-1]))
+    except ValueError:
+        t0 = t1 = datetime.datetime.now()
+    src = pathlib.Path(name or "").name
+    base = t0.strftime("%Y-%m-%d_%H%M")
+    sid, k = base, 2
+    while (TR / sid).exists():   # 같은 강의를 내가 녹음했으면 -2, -3…
+        try:
+            om = json.loads((TR / sid / "meta.json").read_text())
+            if om.get("imported") and om.get("n_lines") == len(lines) \
+                    and om.get("preview") == lines[0]["text"][:80]:
+                return sid, ""   # 같은 번역본을 또 불러옴 (파일 이름이 ' (1)' 처럼 달라도)
+        except Exception:
+            pass
+        sid = f"{base}-{k}"; k += 1
+    sess = TR / sid
+    sess.mkdir(parents=True)
+    # 내려받기 파일 이름은 '<제목>.md' (제목이 없으면 '<sid>.md'), 브라우저가 붙인 ' (1)' 은 뗀다
+    stem = re.sub(r"\s*\(\d+\)$", "", pathlib.Path(src).stem).strip()
+    if re.match(r"\d{4}-\d{2}-\d{2}_\d{4}", stem) or stem.lower() == "transcript":
+        stem = ""
+    meta = {"id": sid, "started": t0.isoformat(), "ended": t1.isoformat(), "state": "done",
+            "polished": False, "imported": src}
+    subject = guess_subject(stem, sid) if stem else ""
+    if subject:   # 내 주차 번호로 제목을 다시 붙인다 (같은 제목이 있으면 _2)
+        meta.update(subject=subject, title=suggest_title(sid, subject), title_auto=True)
+    elif stem:
+        meta.update(title=stem[:60], title_auto=False)
+    write_json_atomic(sess / "meta.json", meta)
+    write_text_atomic(sess / "transcript.md",
+                      (head if head.startswith("# ") else f"# 그냥 받아쓰기 — {t0:%Y-%m-%d %H:%M}") + "\n\n")
+    write_session(sess, [dict(l, i=k) for k, l in enumerate(lines)])
+    return sid, ""
 
 
 def apply_line_ops(lines, action, ids, text, ko):

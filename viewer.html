@@ -78,6 +78,10 @@ aside{width:230px;flex:none;padding:18px 14px;border-right:1px solid var(--line)
   white-space:nowrap;margin-top:1px}
 .sess.rec .d::before{content:"";display:inline-block;width:7px;height:7px;border-radius:99px;
   background:var(--accent);margin-right:6px;animation:pulse 1.4s ease-in-out infinite}
+/* 다듬기·요약이 도는 강의 (여러 개가 같이 돈다) */
+.sess.job:not(.rec) .d::before{content:"✦";color:var(--accent);margin-right:5px;
+  font-size:11px;animation:pulse 1.4s ease-in-out infinite}
+.sess.jobErr:not(.rec) .d::before{content:"⚠";color:var(--accent);margin-right:5px;font-size:11px}
 .sess input.ren{width:100%;font:inherit;font-size:12.5px;font-weight:600;
   border:1px solid var(--accent);border-radius:4px;background:var(--paper2);
   color:var(--ink);padding:1px 5px;outline:none}
@@ -256,6 +260,8 @@ select{-webkit-appearance:none;appearance:none;padding:0 24px 0 10px;
 .fi .fx:hover{color:#c14b3d;background:var(--line)}
 .fi.none{color:var(--ink-soft);justify-content:center}
 #fSt{font-size:11.5px;color:var(--accent);min-height:15px;margin-top:4px}
+#fRetry[hidden]{display:none}
+#fRetry{width:100%;height:26px;line-height:24px;font-size:12px;margin-top:6px}
 #filesPop .fnote{font-size:11px;color:var(--ink-soft);line-height:1.45;margin-top:6px;padding-top:6px;border-top:1px solid var(--line)}
 /* 전사 본문의 섹션 제목 — 요약 목차와 같은 구간. 큰 글자·강조색 번호·위아래 여백·구분선 */
 .sec{display:block;margin:56px 0 18px;padding-bottom:9px;border-bottom:1px solid var(--line-strong);
@@ -305,11 +311,20 @@ select{-webkit-appearance:none;appearance:none;padding:0 24px 0 10px;
 /* 과목 칩 (맥락 박스) */
 .subjRow{display:flex;align-items:flex-start;gap:8px;margin-bottom:10px;font-size:12px;color:var(--ink-soft)}
 .subjRow .cl{margin:4px 0 0;flex:none}
-#subjChips{display:flex;flex-wrap:wrap;gap:5px;flex:1}
-#subjChips button{height:24px;line-height:22px;font-size:12px;padding:0 10px;border-radius:12px;
+#subjChips,.roChips{display:flex;flex-wrap:wrap;gap:5px;flex:1}
+#subjChips button,.roChips button{height:24px;line-height:22px;font-size:12px;padding:0 10px;border-radius:12px;
   border:1px solid var(--line-strong);background:var(--paper);color:var(--ink-soft)}
-#subjChips button:hover{border-color:var(--accent);color:var(--accent);background:var(--paper)}
-#subjChips button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+#subjChips button:hover,.roChips button:hover{border-color:var(--accent);color:var(--accent);background:var(--paper)}
+#subjChips button.on,.roChips button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+/* 녹음 중: 소리·언어 바꾸기는 상태 옆 흐린 글자로만 (누르면 작은 창) */
+#recOptWrap{position:relative;margin-right:auto}
+#recOptWrap[hidden]{display:none}
+#st:has(+ #recOptWrap:not([hidden])){margin-right:0}
+#recOpt{font-size:11px;color:var(--ink-soft);opacity:.5;cursor:pointer;white-space:nowrap}
+#recOpt:hover{opacity:.9}
+#recOptPop{position:absolute;left:0;top:calc(100% + 8px);z-index:20;width:290px;padding:10px 12px 0;
+  background:var(--paper);border:1px solid var(--line-strong);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.12)}
+#recOptPop[hidden]{display:none}
 #subjChips button.add{border-style:dashed}
 #subjNote{font-size:12px;color:var(--ink-soft);margin:-4px 0 8px 36px;min-height:16px}
 #subjNote b{font-weight:500;color:var(--ink)}
@@ -399,7 +414,11 @@ main.side #koHandle{display:block;position:absolute;top:0;bottom:0;
   line-height:1.55;color:var(--ink);background:var(--paper);border:1px solid var(--line-strong);
   border-radius:10px;padding:10px 12px;outline:none}
 .ctxBox textarea:focus{border-color:var(--accent)}
-.ctxBox.drag textarea{border-color:var(--accent);background:var(--accent-soft);border-style:dashed}
+.ctxBox.drag textarea,body.fileDrag .ctxBox textarea{border-color:var(--accent);background:var(--accent-soft);border-style:dashed}
+/* 화면 어디에 끌어다 놓아도 된다는 표시 — 놓기를 가로채지 않게 pointer-events 없음 */
+body.fileDrag::after{content:"놓으면 강의자료로 넣어요";position:fixed;inset:10px;z-index:9999;pointer-events:none;
+  display:flex;align-items:center;justify-content:center;border:2px dashed var(--accent);border-radius:14px;
+  background:var(--accent-soft);opacity:.88;color:var(--accent);font-size:17px;font-weight:600}
 .ctxRow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--ink-soft)}
 .ctxRow button{height:24px;line-height:22px;font-size:12px;padding:0 10px}
 .ctxRow .files{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -465,12 +484,14 @@ main.side #koHandle{display:block;position:absolute;top:0;bottom:0;
   <header>
     <div class="seg" id="tabs" data-g="tab" hidden><button data-v="trans">번역</button><button data-v="sum">요약</button></div>
     <span id="st"></span>
+    <span id="recOptWrap" hidden><span id="recOpt" title="녹음 중에 소리·언어 바꾸기"></span><div id="recOptPop" hidden></div></span>
     <div id="filesWrap"><button id="btnFiles" title="강의자료" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.05 12.25 20.2a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.48-8.48"/></svg><span class="cnt" hidden></span></button>
       <div id="filesPop" hidden>
         <div class="fh">강의자료 <span id="fCnt"></span><button id="fAdd">＋ 추가</button><input type="file" id="fFile" multiple accept=".pdf,image/*,.txt,.md" hidden></div>
         <div id="fList"></div>
+        <button id="fRetry" hidden>미변환 자료 변환하기</button>
         <div id="fSt"></div>
-        <div class="fnote">올리면 바로 텍스트로 바꿔 두고 다듬기·요약이 참고해요. 여기에 끌어다 놓아도 돼요. 과목이 정해져 있고 자료 폴더를 켰으면 그 폴더에도 복사해요.</div>
+        <div class="fnote">올리면 바로 텍스트로 바꿔 두고 다듬기·요약이 참고해요. <b>녹음 중에 넣어도 돼요</b> — 용어를 뽑아 받아쓰기·번역에 바로 반영해요. 여기에 끌어다 놓아도 돼요. 과목이 정해져 있고 자료 폴더를 켰으면 그 폴더에도 복사해요.</div>
       </div>
     </div>
     <button id="btnToc" title="목차 열기/닫기" hidden><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/></svg></button>
@@ -506,6 +527,7 @@ main.side #koHandle{display:block;position:absolute;top:0;bottom:0;
         <div class="sep"></div>
         <div class="row"><span>버전</span><span id="verSt">—</span><button id="btnUpd" hidden>업데이트</button></div>
         <div id="updNote" hidden></div>
+        <div class="row"><span>번역본 가져오기</span><button id="btnImpMd" title="다른 사람이 내려받은 번역본(.md)을 강의 목록에 추가해요" style="height:24px;line-height:22px;font-size:12px">불러오기</button><input type="file" id="impMdFile" multiple accept=".md,.txt,text/markdown" hidden></div>
         <div class="row"><span>백그라운드 엔진</span><button id="btnQuit" style="height:24px;line-height:22px;font-size:12px">종료</button></div>
       </div>
     </div>
@@ -743,6 +765,54 @@ function langSum(codes){
   $("langSum").textContent=names.length<=3?names.join(" · ")
     :names.slice(0,2).join(" · ")+" 외 "+(names.length-2)+"개";
 }
+// 녹음 소리·언어 — 녹음 전 화면(#roPre)과 녹음 중 흐린 글자(#recOpt) 둘 다 이걸로 그린다
+const SYS_IN="__system__";   // engine.SYS_INPUT
+const RO_IN=[["mic","마이크"],["sys","시스템 소리"]];
+const RO_LANG=[["en","영어"],["en,ko","영어+한국어"],["ko","한국어"]];
+function roCur(){
+  return {inp:ST&&ST.input===SYS_IN?"sys":"mic",
+          lang:(ST&&ST.langs&&ST.langs.length?ST.langs:["en","ko"]).join(",")};
+}
+function roChips(k,opts,cur){
+  return '<div class="roChips" data-k="'+k+'">'+opts.map(o=>
+    '<button data-v="'+o[0]+'"'+(o[0]===cur?' class="on"':'')+'>'+o[1]+'</button>').join('')+'</div>';
+}
+function roHTML(){
+  const c=roCur();
+  return '<div class="subjRow"><span class="cl">소리</span>'+roChips("in",RO_IN,c.inp)+'</div>'+
+    '<div class="subjRow"><span class="cl">언어</span>'+roChips("lang",RO_LANG,c.lang)+'</div>';
+}
+let roSig="";
+function roRender(){
+  const live=isLive();
+  $("recOptWrap").hidden=!live;
+  if(!live)$("recOptPop").hidden=true;
+  const c=roCur(), sig=c.inp+"|"+c.lang;
+  if(sig===roSig)return;
+  roSig=sig;
+  const codes=c.lang.split(",");
+  const ln=(RO_LANG.find(o=>o[0]===c.lang)||[0,LANGS.filter(l=>codes.indexOf(l[0])>=0).map(l=>l[1]).join("+")])[1];
+  $("recOpt").textContent=(c.inp==="sys"?"시스템 소리":"마이크")+" · "+ln;
+  if(!$("recOptPop").hidden)$("recOptPop").innerHTML=roHTML();
+  if($("roPre"))$("roPre").innerHTML=roHTML();
+}
+$("recOpt").onclick=e=>{e.stopPropagation();
+  const p=$("recOptPop");p.hidden=!p.hidden;if(!p.hidden)p.innerHTML=roHTML();};
+document.addEventListener("click",async e=>{
+  const b=e.target.closest(".roChips button");
+  if(!b){if(!e.target.closest("#recOptWrap"))$("recOptPop").hidden=true;return}
+  e.stopPropagation();
+  if(b.classList.contains("on")||!ST)return;
+  const k=b.parentNode.dataset.k, v=b.dataset.v;
+  if(k==="in"){
+    let val=SYS_IN;
+    if(v==="mic"){try{val=localStorage.getItem("gyMic")||""}catch(_){val=""}}
+    else if(ST.input){try{localStorage.setItem("gyMic",ST.input)}catch(_){}}   // 고른 마이크 장치를 기억해 둔다
+    ST.input=val;roSig="";roRender();await saveCfg({input:val});
+  }else{
+    const langs=v.split(",");ST.langs=langs;renderLangs(langs);roSig="";roRender();await saveCfg({langs:langs});
+  }
+},true);
 $("langHead").onclick=function(){
   const open=$("langChips").hidden;
   $("langChips").hidden=!open;
@@ -845,14 +915,27 @@ $("matPick").onclick=async e=>{
   $("matPick").disabled=false;
 };
 $("matClear").onclick=async e=>{e.stopPropagation();await saveCfg({mat_dir:""});showMat("");};
+$("btnImpMd").onclick=e=>{e.stopPropagation();$("impMdFile").click()};
+$("impMdFile").onchange=async()=>{   // 다른 사람 번역본 → 새 세션 (여러 개면 마지막 것을 연다)
+  const fs=[...$("impMdFile").files];$("impMdFile").value="";
+  let last="";const errs=[];
+  for(const f of fs){
+    const r=await apiPost("/api/session/import_md",{name:f.name,text:await f.text()});
+    if(r.ok&&r.id)last=r.id;else errs.push(f.name+" — "+(r.error||"불러오지 못했어요"));
+  }
+  if(errs.length)alert(errs.join("\n"));
+  if(last){$("pop").hidden=true;openSession(last);}
+};
 $("btnQuit").onclick=async()=>{await post("quit");
   $("st").textContent="엔진 종료됨 — 앱 아이콘을 다시 실행하면 켜진다";};
 async function fetchDevices(){
   try{
     const r=await api("/api/devices"), sel=$("selInput");
     const names=r.devices||[];
-    if(r.input&&names.indexOf(r.input)<0)names.push(r.input);
-    sel.innerHTML='<option value="">기본</option>'+names.map(n=>'<option value="'+escA(n)+'">'+esc(n)+'</option>').join('');
+    const SYS="__system__";   // engine.SYS_INPUT — Zoom 등 맥에서 나는 소리
+    if(r.input&&r.input!==SYS&&names.indexOf(r.input)<0)names.push(r.input);
+    sel.innerHTML='<option value="">기본</option><option value="'+SYS+'">시스템 소리 (Zoom 등)</option>'
+      +names.map(n=>'<option value="'+escA(n)+'">'+esc(n)+'</option>').join('');
     sel.value=r.input||"";
   }catch(e){}
 }
@@ -883,6 +966,8 @@ async function openSession(id){
   tab="trans";setSeg("tab","trans");SUBJ=null;
   if(!(ST&&ST.sid===id&&ST.state!=="idle")){
     sessCache=await api("/api/session/"+id);
+  }else{
+    sessCache={lines:[],live:true};await refreshCtx();   // 녹음 중 — 라인은 ST, 자료만 채운다
   }
   render();loadSessions();scrollTo(0,0);
 }
@@ -972,6 +1057,16 @@ async function openCourse(subject){
   tab="sum";courseSig="";rev=-1;render();scrollTo(0,0);
   try{const d=await api("/api/course?subject="+encodeURIComponent(subject));
     if(view==="course"&&COURSE&&COURSE.subject===subject){COURSE.data=d;courseSig="";tocSig="";render()}}catch(e){}
+}
+function jobOf(sid){return (ST&&ST.jobs&&ST.jobs[sid])||null}
+/* 목록에서 도는 강의에 표시만 갈아끼운다 — 목록을 다시 그리면 열린 메뉴가 닫힌다 */
+function paintJobs(){
+  const jobs=(ST&&ST.jobs)||{};
+  document.querySelectorAll("#sessList .sess").forEach(el=>{
+    const j=jobs[el.dataset.id]||{};
+    el.classList.toggle("job",!!j.busy);
+    el.classList.toggle("jobErr",!j.busy&&!!j.error);
+  });
 }
 function courseJob(){
   const j=ST&&ST.course;
@@ -1147,7 +1242,7 @@ function md2html(md){
 }
 let sumSig="";
 function renderSummary(){
-  const sm=ST&&ST.summary, busy=sm&&sm.busy&&sm.sid===view, err=!busy&&sm&&sm.sid===view&&sm.error||"";
+  const jb=jobOf(view)||{}, busy=!!jb.busy, err=(!busy&&jb.error)||"";
   const md=(sessCache&&sessCache.summary)||"";
   const sig=view+"|"+(busy?"busy:"+(sm.note||""):"")+"|"+err+"|"+(sessCache?sessCache.summary_at:"")+"|"+md.length;
   if(sig===sumSig)return;
@@ -1156,13 +1251,13 @@ function renderSummary(){
   if(md){
     const at=sessCache.summary_at?new Date(sessCache.summary_at):null;
     v.innerHTML='<div class="sumBar"><span class="sp">'+(at?"정리 "+at.toLocaleString("ko-KR",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}):"")+
-      '</span>'+(busy?'<span>✦ 다시 만드는 중… '+esc(sm.note||"")+'</span>':'')+
+      '</span>'+(busy?'<span>✦ 다시 만드는 중… '+esc(jb.note||"")+'</span>':'')+
       '</div><div class="sum">'+md2html(md)+'</div>'+
       (busy?'':'<div class="sumFoot"><a id="sumRedo" title="전사·자료로 요약을 다시 만들어요 (지금 요약은 덮어써요)">요약 다시 만들기</a></div>');
     if($("sumRedo"))$("sumRedo").onclick=()=>{if(confirm("요약을 다시 만들까요? 지금 요약은 덮어써요."))startSummary()};
     v.querySelectorAll(".smeta a[data-l]").forEach(a=>a.onclick=()=>gotoLine(+a.dataset.l));
   }else if(busy){
-    v.innerHTML='<div class="sumEmpty"><p>✦ '+esc(sm.note||"요약 중…")+'</p><p style="font-size:12.5px">자료는 올릴 때 미리 텍스트로 바꿔 둬요(안 된 게 있으면 먼저 바꾸고) → 다듬기 → 요약. 이 화면을 떠나도 계속 돼요.</p></div>';
+    v.innerHTML='<div class="sumEmpty"><p>✦ '+esc(jb.note||"요약 중…")+'</p><p style="font-size:12.5px">자료는 올릴 때 미리 텍스트로 바꿔 둬요(안 된 게 있으면 먼저 바꾸고) → 다듬기 → 요약. 이 화면을 떠나도 계속 돼요.</p></div>';
   }else{
     v.innerHTML=err?'<div class="sumEmpty"><p>⚠ '+esc(err)+'</p><p style="font-size:12.5px">다듬기는 끝난 곳까지 저장돼 있어서, 다시 시도하면 거기서 이어 해요. 인터넷이 끊겼으면 연결된 뒤에 눌러 주세요.</p><button id="sumGo" class="rec">✦ 다시 시도</button></div>'
     :'<div class="sumEmpty"><p>강의 요약·정리본을 만들어요. 아직 다듬지 않았으면 먼저 다듬고, 강의자료(PDF)가 있으면 오늘 어느 페이지를 다뤘는지도 붙여요. 자료를 더 넣으려면 위의 📎 버튼. 목차가 생기면 번역 탭에서도 바로 이동할 수 있어요.</p><button id="sumGo" class="rec">✦ 요약 만들기</button></div>';
@@ -1399,6 +1494,20 @@ function convLabel(f){
   const conv=(sessCache&&sessCache.conv)||{};
   return f.converted?"변환됨":(conv.busy?"변환 중…":(conv.error?"변환 실패":"미변환"));
 }
+/* 자료 상태만 가볍게 다시 읽는다 — /api/session/<id> 와 달리 녹음 중에도 안전하다 */
+async function refreshCtx(){
+  if(view==="home"||view==="course"||!sessCache)return null;
+  const sid=view;
+  try{
+    const c=await api("/api/ctx?id="+encodeURIComponent(sid));
+    if(view!==sid||!sessCache)return null;
+    sessCache.conv=c.conv;sessCache.ctx_text=c.ctx_text;
+    sessCache.ctx_info=c.ctx_info;sessCache.ctx_files=c.ctx_files;
+    renderCtxFiles();renderFilesBadge();
+    if(!$("filesPop").hidden)renderFiles();
+    return c;
+  }catch(e){return null}
+}
 function renderFilesBadge(){
   const n=((sessCache&&sessCache.ctx_info)||[]).length, b=$("btnFiles").querySelector(".cnt");
   b.hidden=!n; b.textContent=n;
@@ -1418,24 +1527,60 @@ function renderFiles(){
     if(sessCache){sessCache.ctx_files=r.files;sessCache.ctx_info=r.info;}
     renderFiles();renderCtxFiles();
   });
-  if(!ctxBusy)$("fSt").textContent=conv.busy?conv.note:(conv.error||"");
+  const left=info.filter(f=>!f.converted).length;
+  $("fRetry").hidden=!(left&&!conv.busy);
+  $("fRetry").textContent="미변환 "+left+"개 변환하기";
+  if(!ctxBusy&&!upBusy)$("fSt").textContent=conv.busy?conv.note:(conv.error||ctxJobNote());
 }
+/* 녹음 중 자료를 넣었을 때의 맥락 재정리 상태 (받아쓰기 프롬프트·번역에 반영) */
+function ctxJobNote(){
+  const j=ST&&ST.ctxjob;
+  return j&&j.sid===view&&ctxJobFresh()?(j.error||j.note||""):"";
+}
+/* 끝난 맥락 정리 알림은 20초만 — 계속 남아 다른 알림을 가리지 않게 */
+function ctxJobFresh(){
+  const j=ST&&ST.ctxjob;
+  return !!(j&&(j.busy||Date.now()-ctxJobAt<20000));
+}
+$("fRetry").onclick=async e=>{
+  e.stopPropagation();
+  $("fRetry").hidden=true;
+  const r=await apiPost("/api/session/ctx_convert",{id:view});
+  if(r&&r.ok){if(sessCache){sessCache.conv=r.conv;sessCache.ctx_info=r.info;}renderFiles();}
+  else $("fSt").textContent=(r&&r.error)||"변환을 시작하지 못했어요";
+};
 $("btnFiles").onclick=async e=>{
   e.stopPropagation();
   const opening=$("filesPop").hidden;
   $("filesPop").hidden=!opening; $("pop").hidden=true;
-  if(opening){renderFiles();
-    if(!isLive()){try{const c=await api("/api/session/"+view);   // 변환 상태만 최신으로
-      if(sessCache){sessCache.ctx_info=c.ctx_info;sessCache.conv=c.conv;sessCache.ctx_text=c.ctx_text;}renderFiles();}catch(e){}}
-  }
+  if(opening){renderFiles();refreshCtx();}   // 녹음 중에도 최신 변환 상태로
 };
 $("fAdd").onclick=e=>{e.stopPropagation();$("fFile").click()};
-$("fFile").onchange=e=>{ctxAddFiles(e.target.files,false);e.target.value=""};
+$("fFile").onchange=e=>{ctxAddFiles(e.target.files,!!$("ctxBox"));e.target.value=""};   // 녹음 전 화면이면 맥락도 정리
 $("filesPop").onclick=e=>e.stopPropagation();
 $("filesPop").ondragover=e=>{e.preventDefault();$("filesPop").classList.add("drag")};
 $("filesPop").ondragleave=()=>$("filesPop").classList.remove("drag");
-$("filesPop").ondrop=e=>{e.preventDefault();$("filesPop").classList.remove("drag");ctxAddFiles(e.dataTransfer.files,false)};
+$("filesPop").ondrop=e=>{e.preventDefault();e.stopPropagation();$("filesPop").classList.remove("drag");ctxAddFiles(e.dataTransfer.files,!!$("ctxBox"))};
 document.addEventListener("click",e=>{if(!e.target.closest("#filesWrap"))$("filesPop").hidden=true});
+/* 파일을 화면 어디에 놓아도 자료로 — 녹음 전 화면에선 맥락 박스에 놓은 것과 같고(영어 맥락 정리),
+   녹음 중·후에는 자료 패널에 놓은 것과 같다. 안 막으면 브라우저가 PDF를 열어 뷰어를 떠난다 */
+let fileDragT=0;
+function dragHasFiles(e){return !!(e.dataTransfer&&[...e.dataTransfer.types].includes("Files"))}
+document.addEventListener("dragover",e=>{
+  if(!dragHasFiles(e))return;
+  e.preventDefault();
+  const ok=view!=="home"&&view!=="course";
+  e.dataTransfer.dropEffect=ok?"copy":"none";
+  if(!ok)return;
+  document.body.classList.add("fileDrag");
+  clearTimeout(fileDragT);fileDragT=setTimeout(()=>document.body.classList.remove("fileDrag"),200);
+});
+document.addEventListener("drop",e=>{
+  if(!dragHasFiles(e))return;
+  e.preventDefault();document.body.classList.remove("fileDrag");
+  if(view==="home"||view==="course")return;
+  ctxAddFiles(e.dataTransfer.files,!!$("ctxBox"));
+});
 /* 맥락 박스의 자료 줄 — 이름 + 변환 표시(✓ 됨 · … 진행 중) */
 function renderCtxFiles(){
   const row=$("ctxFilesRow"); if(!row)return;
@@ -1448,12 +1593,13 @@ function renderCtxFiles(){
 }
 /* ── 맥락 자료 → Gemini 영어 정리 ── */
 let ctxBusy=false, ctxSt="", ctxLastSrc=null;
+let upBusy=false;   // 업로드 중 — 맥락 정리(ctxBusy)와 따로 둬서, 정리가 도는 중에도 자료를 더 넣을 수 있게
 function ctxShowStatus(){
   const el=$("ctxSt"), box=$("ctxBox");
   if($("fSt"))$("fSt").textContent=ctxSt;
   if(!el)return;
-  el.textContent=ctxSt; el.classList.toggle("busy",ctxBusy);
-  if(box)box.classList.toggle("busy",ctxBusy);
+  el.textContent=ctxSt; el.classList.toggle("busy",ctxBusy||upBusy);
+  if(box)box.classList.toggle("busy",ctxBusy||upBusy);
 }
 function hangulHeavy(s){
   const h=(s.match(/[가-힣]/g)||[]).length, a=(s.match(/[A-Za-z]/g)||[]).length;
@@ -1467,13 +1613,14 @@ async function ctxBlur(){
 }
 function readB64(f){return new Promise((ok,no)=>{const r=new FileReader();
   r.onload=()=>ok(String(r.result).split(",")[1]||"");r.onerror=no;r.readAsDataURL(f)})}
-async function ctxAddFiles(list,digest=true){   // digest=false: 녹음 뒤 자료 패널에서 — 맥락 노트는 안 건드린다
-  if(view==="home"||ctxBusy||!list||!list.length)return;
+async function ctxAddFiles(list,digest=true){   // digest=false: 녹음 중·뒤 자료 패널에서 — 맥락 노트는 서버가 알아서
+  if(view==="home"||view==="course"||upBusy||!list||!list.length)return;
   const media=[...list].find(f=>MEDIA_RE.test(f.name));
   if(media&&digest){importUpload(media);return}   // 녹음 전 화면에 녹음·영상 파일 → 그 파일을 받아쓴다
   const files=[...list].filter(f=>/\.(pdf|png|jpe?g|webp|gif|heic|txt|md)$/i.test(f.name));
   if(!files.length){ctxSt="PDF·이미지·텍스트 파일만 넣을 수 있어요";ctxShowStatus();return}
-  ctxBusy=true;ctxSt="자료 올리는 중… ("+files.length+"개)";ctxShowStatus();
+  const busyDigest=ctxBusy;   // 이미 정리가 도는 중 — 서버가 끝나는 대로 새 자료까지 넣어 다시 정리한다
+  upBusy=true;ctxSt="자료 올리는 중… ("+files.length+"개)";ctxShowStatus();
   try{
     const payload=[];
     for(const f of files)payload.push({name:f.name,b64:await readB64(f)});
@@ -1485,11 +1632,18 @@ async function ctxAddFiles(list,digest=true){   // digest=false: 녹음 뒤 자�
       subjFlash("자료 이름으로 과목을 '"+r.guess+"'로 봤어요 — 제목 "+r.title+(r.copied&&r.copied.length?" · 자료 폴더에 복사":""));loadSessions();}
     else if(r.copied&&r.copied.length)subjFlash("자료 "+r.copied.length+"개를 자료 폴더에 복사했어요");
     renderSubjChips();renderFiles();renderCtxFiles();
-    ctxBusy=false;
-    if(!digest){ctxSt="올렸어요 — 텍스트로 바꾸는 중. 다듬기·요약은 변환이 끝나길 기다렸다 써요";ctxShowStatus();return}
+    upBusy=false;
+    if(r.digesting){   // 녹음 중 — 서버가 맥락을 다시 정리해 받아쓰기·번역에 반영한다
+      ctxSt="올렸어요 — 용어를 뽑아 받아쓰기·번역에 반영하고, 텍스트로도 바꾸는 중이에요";
+      ctxShowStatus();return}
+    if(busyDigest){
+      ctxSt="올렸어요 — 지금 하는 정리가 끝나면 이 자료까지 넣어 다시 정리해요";
+      ctxShowStatus();return}
+    if(!digest){ctxSt="올렸어요 — 텍스트로 바꾸는 중. 다듬기·요약은 변환이 끝나길 기다렸다 써요";
+      ctxShowStatus();return}
     const ta=$("ctxTa"); const note=ta?ta.value.trim():"";
     await ctxDigest(hangulHeavy(note)||!(sessCache&&sessCache.context)?note:"");
-  }catch(e){ctxBusy=false;ctxSt="⚠ "+(e.message||e);ctxShowStatus();}
+  }catch(e){upBusy=false;ctxSt="⚠ "+(e.message||e);ctxShowStatus();}
 }
 async function ctxDigest(text){
   if(view==="home"||ctxBusy)return;
@@ -1500,12 +1654,13 @@ async function ctxDigest(text){
     const r=await apiPost("/api/session/digest",{id:sid,text});
     if(!r.ok)throw new Error(r.error||"실패");
     ctxLastSrc=text.trim();
-    if(sessCache){sessCache.context=r.context}
-    ctxSt="정리 완료 — 필요하면 고쳐 쓰세요";
+    if(sessCache&&view===sid){sessCache.context=r.context}
+    ctxSt=r.live?"정리 완료 — 녹음 중인 받아쓰기·번역에 반영했어요":"정리 완료 — 필요하면 고쳐 쓰세요";
   }catch(e){ctxSt="⚠ "+(e.message||e)}
   ctxBusy=false;
   if(view!==sid)return;
-  if(ctxSt.startsWith("⚠"))ctxShowStatus();   // 실패: 사용자가 적은 메모는 그대로 둔다
+  // 실패: 사용자가 적은 메모는 그대로 둔다. 녹음이 시작돼 맥락 박스가 없으면 상태 줄만
+  if(ctxSt.startsWith("⚠")||!$("ctxBox"))ctxShowStatus();
   else render();                               // 성공: 영어 맥락·자료 목록 반영
 }
 async function ctxClearFiles(){
@@ -1551,6 +1706,7 @@ function render(){
   const atBottom=innerHeight+scrollY>=document.body.scrollHeight-160;
   if(lines.length===0&&!live){
     $("log").innerHTML='<div class="ctxBox" id="ctxBox">'+
+      '<div id="roPre"></div>'+
       '<div class="subjRow"><span class="cl">과목</span><div id="subjChips"></div></div><div id="subjNote"></div>'+
       '<div class="cl">맥락 (선택) — 과목·주제·자주 나올 용어를 적어두면 받아쓰기와 번역이 더 정확해져요. '+
       '한국어로 적거나 강의자료(PDF·이미지)를 끌어다 놓으면 Gemini가 영어 맥락으로 정리하고, 자료는 텍스트로 바꿔 두었다가 다듬기·요약에 써요.</div>'+
@@ -1561,6 +1717,7 @@ function render(){
       '<span id="ctxFilesRow" style="display:contents"></span>'+
       '</div><div id="ctxSt"></div></div>'+
       '<div class="empty">아래 녹음 시작을 누르면 여기에 받아써요.</div>';
+    $("roPre").innerHTML=roHTML();
     const ta=$("ctxTa");
     ta.value=(sessCache&&sessCache.context)||"";
     ta.onblur=()=>ctxBlur();
@@ -1571,7 +1728,7 @@ function render(){
     const box=$("ctxBox");
     box.ondragover=e=>{e.preventDefault();box.classList.add("drag")};
     box.ondragleave=()=>box.classList.remove("drag");
-    box.ondrop=e=>{e.preventDefault();box.classList.remove("drag");ctxAddFiles(e.dataTransfer.files)};
+    box.ondrop=e=>{e.preventDefault();e.stopPropagation();box.classList.remove("drag");ctxAddFiles(e.dataTransfer.files)};
     ctxShowStatus();renderSubjChips();if(!SUBJ)loadSubjects();
   }else if(!editing){
     const ids=new Set(lines.map(l=>l.i));
@@ -1611,19 +1768,22 @@ function renderDock(){
     html='<button disabled>'+(s==="starting"?"준비 중…":"저장 중…")+'</button>';
   }else if(s!=="idle"){
     html='<button disabled>다른 세션 녹음 중</button>';
+    const j=jobOf(view);   // 녹음 전에 걸어 둔 다듬기는 녹음 중에도 계속 돈다
+    if(j&&j.busy)html+='<button disabled>✦ '+((sessCache&&sessCache.polished)?"요약 중…":"다듬는 중…")+'</button>';
   }else{
     const has=sessCache&&sessCache.lines&&sessCache.lines.length>0;
     html='<span class="split"><button id="dRec" class="rec">● '+(has?"녹음 이어하기":"녹음 시작")+'</button>'+
       '<button id="dMore" class="rec caret" title="더보기">▾</button></span>';
-    const p=ST&&ST.polish, sm=ST&&ST.summary;
-    if(p&&p.busy&&p.sid===view)html+='<button disabled>✦ 다듬는 중…</button>';
-    else if(sm&&sm.busy&&sm.sid===view)html+='<button disabled>✦ 요약 중…</button>';
-    else{
-      const pd=sessCache&&sessCache.polish_done, pErr=p&&p.error&&p.sid===view, sErr=sm&&sm.error&&sm.sid===view;
-      if(has&&sessCache&&!sessCache.polished)html+=pd
-        ?'<button id="dPolish" title="끊긴 곳('+pd+'줄)부터 이어서 다듬어요">✦ 다듬기 이어하기</button>'
-        :'<button id="dPolish" title="전체 문맥과 강의자료로 원문을 교정하고 번역을 다시 만들어요">✦ '+(pErr?"다듬기 다시 시도":"다듬기")+'</button>';
-      if(has&&sessCache&&(!sessCache.summary||sErr))html+='<button id="dSum" title="강의 요약·정리본을 만들어요 (다듬기가 안 됐으면 먼저 다듬어요)">✦ '+(sErr?"요약 다시 시도":"요약")+'</button>';
+    // 다듬기와 요약은 한 버튼 — 누르면 원문 교정·번역을 다시 만들고 이어서 요약까지 만든다
+    const j=jobOf(view), done=sessCache&&sessCache.polished;
+    if(j&&j.busy){
+      html+='<button disabled>✦ '+(done?"요약 중…":"다듬는 중…")+'</button>';
+    }else if(has&&sessCache&&(!done||!sessCache.summary)){
+      const pd=sessCache.polish_done, err=j&&j.error;
+      const lbl=err?(done?"요약 다시 시도":"다듬기 다시 시도"):pd?"다듬기 이어하기":(done?"요약":"다듬기");
+      html+='<button id="dPolish" title="'+(done?"강의 요약·정리본을 만들어요"
+        :"전체 문맥과 강의자료로 원문을 교정하고 번역을 다시 만든 뒤, 이어서 요약까지 만들어요")
+        +(pd?" (끊긴 곳 "+pd+"줄부터 이어서)":"")+'">✦ '+lbl+'</button>';
     }
   }
   if(bar.innerHTML!==html){
@@ -1641,16 +1801,17 @@ function renderDock(){
     if($("dPause"))$("dPause").onclick=()=>post(ST.state==="paused"?"resume":"pause");
     if($("dStop"))$("dStop").onclick=()=>post("stop");
     if($("dPolish"))$("dPolish").onclick=async()=>{
-      const r=await apiPost("/api/session/polish",{id:view});
-      if(!r.ok)alert(r.error||"다듬기를 시작하지 못했어요");
-      else{$("note").textContent="다듬기 시작…";renderDock()}
+      // 요약 작업이 다듬기부터 한다 — 끝나면 뷰어가 알아서 요약 탭으로 넘어간다
+      const r=await apiPost("/api/session/summary",{id:view});
+      if(!r.ok){alert(r.error||"시작하지 못했어요");return}
+      $("note").textContent=(sessCache&&sessCache.polished?"요약":"다듬기")+" 시작…";
+      sumSig="";renderDock();
     };
-    if($("dSum"))$("dSum").onclick=async()=>{await startSummary();setTab("sum");};
   }
 }
 
 /* ── 폴링 ── */
-let convTick=0;
+let convTick=0, ctxJobSig="", ctxJobAt=0, allJobsSig="";
 async function tick(){
   try{
     const s=await api("/api/state");
@@ -1661,11 +1822,24 @@ async function tick(){
     if(s.state==="idle"&&s.recover)parts.splice(0,1,"복구 중",s.recover);
     if(s.error)parts.push("⚠ "+s.error);
     $("st").textContent=parts.join(" · ");
-    const p=s.polish||{}, sm=s.summary||{};
+    const jb=jobOf(view)||{}, cj=s.ctxjob||{};
     const mine=x=>x.sid===view;
     $("note").textContent=view==="course"?((courseJob()||{}).error||"")
-      :(mine(sm)&&(sm.note||sm.error))?(sm.error||sm.note)
-      :(mine(p)&&(p.note||p.error))?(p.error||p.note):(s.trans||"");
+      :(jb.note||jb.error)?(jb.error||jb.note)
+      :(mine(cj)&&ctxJobFresh()&&(cj.note||cj.error))?(cj.error||cj.note):(s.trans||"");
+    // 여러 강의가 같이 돌 수 있다 — 어느 하나라도 상태가 바뀌면 목록 표시를 갱신한다
+    const aj=s.jobs||{}, ajs=Object.keys(aj).sort()
+      .map(k=>k+":"+(aj[k].busy?1:0)+(aj[k].error?"e":"")).join(",");
+    if(ajs!==allJobsSig){
+      const had=allJobsSig; allJobsSig=ajs; paintJobs();
+      if(had)loadSessions();   // 끝난 강의의 요약·제목이 목록에 반영되게
+    }
+    const cjs=cj.sid+"|"+cj.busy+"|"+cj.note+"|"+cj.error;
+    if(cjs!==ctxJobSig){
+      const first=!ctxJobSig; ctxJobSig=cjs;
+      if(!first)ctxJobAt=Date.now();   // 창을 새로 연 직후엔 옛 알림을 다시 띄우지 않는다
+      if(!$("filesPop").hidden)renderFiles();
+    }
     if(view==="course"){   // 정리본 작업 진행 반영, 끝나면 다시 읽는다
       const cj=courseJob(), cs=cj?cj.busy+"|"+cj.note+"|"+cj.error:"";
       if(cs!==courseJobSig){
@@ -1679,25 +1853,28 @@ async function tick(){
         courseSig="";rev=-1;
       }
     }
-    const sig=view+"#"+(mine(p)?p.note+"|"+p.busy:"")+"#"+(mine(sm)?sm.note+"|"+sm.busy:"");
+    const sig=view+"#"+(jb.note||"")+"|"+(jb.busy?1:0)+"|"+(jb.error||"");
     if(sig!==jobSig){
-      const wasBusy=/\|true$/.test(jobSig.split("#")[2]||"");
+      const wasBusy=/\|1\|/.test(jobSig.split("#")[1]||"");
       jobSig=sig;
-      if(view!=="home"&&!isLive()&&(mine(p)||mine(sm))){
+      if(view!=="home"&&view!=="course"&&!isLive()&&jb.sid){
         sessCache=await api("/api/session/"+view);rev=-1;   // 청크마다·완료 시 결과 반영
-        if(wasBusy&&mine(sm)&&!sm.busy&&!sm.error&&sessCache.summary){tab="sum";}  // 요약 완료 → 바로 보여준다
+        // 요약 완료 → 바로 보여준다 (보고 있는 강의일 때만. 다른 강의가 끝나도 화면은 안 튄다)
+        if(wasBusy&&!jb.busy&&!jb.error&&jb.kind==="summary"&&sessCache.summary){tab="sum";}
       }
     }
-    if(convTick++%5===0&&view!=="home"&&!isLive()&&sessCache&&sessCache.conv&&sessCache.conv.busy){
-      try{const c=await api("/api/session/"+view);   // 자료 변환 진행만 갱신 (입력 중인 메모는 건드리지 않는다)
-        sessCache.conv=c.conv;sessCache.ctx_text=c.ctx_text;sessCache.ctx_info=c.ctx_info;
-        if($("ctxSt")&&!ctxBusy&&!ctxSt.startsWith("⚠")){ctxSt=c.conv.busy?c.conv.note:(c.conv.error||"자료 변환 완료");ctxShowStatus();}
-        renderCtxFiles();if(!$("filesPop").hidden)renderFiles();
-      }catch(e){}
+    // 자료 변환 진행 갱신 — 녹음 중에도 돈다 (예전엔 녹음 중엔 멈춰서 '변환 중'이 그대로 남았다).
+    // 가벼운 /api/ctx 라 입력 중인 메모나 라이브 화면을 건드리지 않는다
+    if(convTick++%3===0&&view!=="home"&&view!=="course"&&sessCache
+       &&(sessCache.conv&&sessCache.conv.busy||(ST&&ST.ctxjob&&ST.ctxjob.busy&&ST.ctxjob.sid===view))){
+      const c=await refreshCtx();
+      if(c&&$("ctxSt")&&!ctxBusy&&!upBusy&&!ctxSt.startsWith("⚠")){
+        ctxSt=c.conv.busy?c.conv.note:(c.conv.error||ctxJobNote()||"자료 변환 완료");ctxShowStatus();}
     }
     setSeg("tr",s.translate_mode);
     setSeg("live",s.live_mode||"on");
     renderLangs(s.langs);
+    roRender();
     if(was==="finishing"&&s.state==="idle"){  // 저장 끝 — 교정 번역 반영
       if(view===s.sid)sessCache=await api("/api/session/"+view);
       rev=-1;loadSessions();
@@ -1794,6 +1971,7 @@ function renderSessList(){
   document.querySelectorAll(".gcourse").forEach(b=>b.onclick=e=>{e.stopPropagation();openCourse(b.dataset.s)});
   document.querySelectorAll(".tSearch").forEach(b=>b.onclick=e=>{e.stopPropagation();openSearch()});
   document.querySelectorAll(".tFilter").forEach(b=>b.onclick=e=>{e.stopPropagation();openFilter(b)});
+  paintJobs();
 }
 function closeMenu(){document.querySelectorAll(".smenu").forEach(x=>x.remove());smenuOpen=false;}
 addEventListener("click",e=>{
